@@ -121,18 +121,18 @@ impl CameraController {
             _ => false,
         };
         self.user_inptut = processed;
-        return processed;
+        processed
     }
 
     pub fn process_mouse(&mut self, mouse_dx: f32, mouse_dy: f32) {
         if self.left_mouse_pressed {
-            self.rotation.x += mouse_dx as f32;
-            self.rotation.y += mouse_dy as f32;
+            self.rotation.x += mouse_dx;
+            self.rotation.y += mouse_dy;
             self.user_inptut = true;
         }
         if self.right_mouse_pressed {
-            self.shift.y += -mouse_dx as f32;
-            self.shift.x += mouse_dy as f32;
+            self.shift.y += -mouse_dx;
+            self.shift.x += mouse_dy;
             self.user_inptut = true;
         }
     }
@@ -320,14 +320,14 @@ fn closest_point(orig: Point3<f32>, dir: Vector3<f32>, point: Point3<f32>) -> Po
 
     let dot_p = lhs.dot(dir);
     // Return result
-    return orig + dir * dot_p;
+    orig + dir * dot_p
 }
 
 fn angle_short(a: Vector3<f32>, b: Vector3<f32>) -> Rad<f32> {
     let angle = a.angle(b);
     if angle > Rad(PI / 2.) {
-        return Rad(PI) - angle;
+        Rad(PI) - angle
     } else {
-        return angle;
+        angle
     }
 }

@@ -19,7 +19,7 @@ impl PerspectiveCamera {
         PerspectiveCamera {
             position,
             rotation,
-            projection: projection,
+            projection,
         }
     }
 
@@ -145,10 +145,10 @@ impl PerspectiveProjection {
 
     pub(crate) fn focal(&self, viewport: Vector2<u32>) -> Vector2<f32> {
         let viewport: Vector2<f32> = viewport.cast().unwrap();
-        return Vector2::new(
+        Vector2::new(
             fov2focal(self.fovx, viewport.x),
             fov2focal(self.fovy, viewport.y),
-        );
+        )
     }
 
     pub fn lerp(&self, other: &PerspectiveProjection, amount: f32) -> PerspectiveProjection {
@@ -190,17 +190,17 @@ pub trait Camera {
         planes[3] = pv.row(3) - pv.row(1);
         planes[4] = pv.row(3) + pv.row(2);
         planes[5] = pv.row(3) - pv.row(2);
-        for i in 0..6 {
-            planes[i] = planes[i].normalize();
+        for plane in &mut planes {
+            *plane = plane.normalize();
         }
-        return FrustumPlanes {
+        FrustumPlanes {
             near: planes[4],
             far: planes[5],
             left: planes[0],
             right: planes[1],
             top: planes[3],
             bottom: planes[2],
-        };
+        }
     }
 }
 
@@ -210,7 +210,7 @@ pub fn world2view(r: Matrix3<f32>, t: Vector3<f32>) -> Matrix4<f32> {
     rt[1].w = t.y;
     rt[2].w = t.z;
     rt[3].w = 1.;
-    return rt.inverse_transform().unwrap().transpose();
+    rt.inverse_transform().unwrap().transpose()
 }
 
 pub fn build_proj(znear: f32, zfar: f32, fov_x: Rad<f32>, fov_y: Rad<f32>) -> Matrix4<f32> {
@@ -230,11 +230,11 @@ pub fn build_proj(znear: f32, zfar: f32, fov_x: Rad<f32>, fov_y: Rad<f32>) -> Ma
     p[3][2] = 1.;
     p[2][2] = zfar / (zfar - znear);
     p[2][3] = -(zfar * znear) / (zfar - znear);
-    return p.transpose();
+    p.transpose()
 }
 
 pub fn focal2fov(focal: f32, pixels: f32) -> Rad<f32> {
-    return Rad(2. * (pixels / (2. * focal)).atan());
+    Rad(2. * (pixels / (2. * focal)).atan())
 }
 
 pub fn fov2focal(fov: Rad<f32>, pixels: f32) -> f32 {

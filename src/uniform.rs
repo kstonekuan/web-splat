@@ -18,14 +18,14 @@ where
     pub fn new_default(device: &wgpu::Device, label: Option<&str>) -> Self {
         let data = T::default();
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: label,
+            label,
             contents: bytemuck::cast_slice(&[data]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let bg_label = label.map(|l| format!("{l} bind group"));
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: bg_label.as_ref().map(|s| s.as_str()),
+            label: bg_label.as_deref(),
             layout: &Self::bind_group_layout(device),
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -48,14 +48,14 @@ where
     #[allow(dead_code)]
     pub fn new(device: &wgpu::Device, data: T, label: Option<&str>) -> Self {
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: label,
+            label,
             contents: bytemuck::cast_slice(&[data]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let bg_label = label.map(|l| format!("{l} bind group"));
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: bg_label.as_ref().map(|s| s.as_str()),
+            label: bg_label.as_deref(),
             layout: &Self::bind_group_layout(device),
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -85,8 +85,10 @@ where
             label: Some("uniform bind group layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                // do not change to wgpu::ShaderStages::all(), this gives an error in chrome 
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                // do not change to wgpu::ShaderStages::all(), this gives an error in chrome
+                visibility: wgpu::ShaderStages::VERTEX
+                    | wgpu::ShaderStages::FRAGMENT
+                    | wgpu::ShaderStages::COMPUTE,
                 ty: Self::binding_type(),
                 count: None,
             }],
@@ -129,12 +131,12 @@ where
                 resource: buffer.as_entire_binding(),
             }],
         });
-        return Self {
+        Self {
             buffer,
-            data: self.data.clone(),
+            data: self.data,
             label: self.label.clone(),
-            bind_group: bind_group,
-        };
+            bind_group,
+        }
     }
 
     pub fn bind_group(&self) -> &wgpu::BindGroup {
@@ -142,7 +144,7 @@ where
     }
 }
 
-impl<T: ?Sized + Pod> AsMut<T> for UniformBuffer<T> {
+impl<T: Pod> AsMut<T> for UniformBuffer<T> {
     fn as_mut(&mut self) -> &mut T {
         &mut self.data
     }

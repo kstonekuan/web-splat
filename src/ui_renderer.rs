@@ -15,8 +15,12 @@ impl EguiWGPU {
     ) -> Self {
         let ctx = Default::default();
         Self {
-            winit: egui_winit::State::new(ctx, ViewportId::ROOT, window, None, None,None),
-            renderer: egui_wgpu::Renderer::new(device, output_format, None, 1,false),
+            winit: egui_winit::State::new(ctx, ViewportId::ROOT, window, None, None, None),
+            renderer: egui_wgpu::Renderer::new(
+                device,
+                output_format,
+                egui_wgpu::RendererOptions::default(),
+            ),
         }
     }
 
@@ -32,7 +36,7 @@ impl EguiWGPU {
         event: &winit::event::WindowEvent,
     ) -> bool {
         let resp = self.winit.on_window_event(window, event);
-        return resp.consumed;
+        resp.consumed
     }
 
     pub fn begin_frame(&mut self, window: &winit::window::Window) {
@@ -69,7 +73,7 @@ impl EguiWGPU {
         };
 
         for (id, delta) in &output.textures_delta.set {
-            self.renderer.update_texture(device, queue, *id, &delta);
+            self.renderer.update_texture(device, queue, *id, delta);
         }
 
         self.renderer
@@ -82,18 +86,14 @@ impl EguiWGPU {
         }
     }
 
-    pub fn render(
-        &mut self,
-        render_pass: &mut wgpu::RenderPass<'static>,
-        state: & UIRenderState,
-    ) {
+    pub fn render(&mut self, render_pass: &mut wgpu::RenderPass<'static>, state: &UIRenderState) {
         self.renderer
             .render(render_pass, &state.clipped_meshes, &state.screen_descriptor);
     }
 
     pub fn cleanup(&mut self, state: UIRenderState) {
         for id in &state.output.textures_delta.free {
-            self.renderer.free_texture(&id);
+            self.renderer.free_texture(id);
         }
     }
 }

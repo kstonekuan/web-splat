@@ -68,7 +68,7 @@ impl GPURSSorter {
             let mut cur_sorter: GPURSSorter;
 
             log::debug!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
-            let sizes = vec![1, 8, 16, 32];
+            let sizes = [1, 8, 16, 32];
             let mut cur_size = 2;
             enum State {
                 Init,
@@ -123,18 +123,15 @@ impl GPURSSorter {
                 "GPURSSorter::new() No workgroup size that works was found. Unable to use sorter"
             );
             }
-            cur_sorter = Self::new_with_sg_size(device, biggest_that_worked as u32);
+            cur_sorter = Self::new_with_sg_size(device, biggest_that_worked);
             log::info!(
                 "Created a sorter with subgroup size {}\n",
                 cur_sorter.subgroup_size
             );
-            return cur_sorter;
+            cur_sorter
         } else {
-            log::info!(
-                "Created a sorter with subgroup size {}\n",
-                sg_size
-            );
-            return Self::new_with_sg_size(device, sg_size);
+            log::info!("Created a sorter with subgroup size {}\n", sg_size);
+            Self::new_with_sg_size(device, sg_size)
         }
     }
 
@@ -279,7 +276,7 @@ impl GPURSSorter {
             cache: None,
         });
 
-        return Self {
+        Self {
             bind_group_layout,
             render_bind_group_layout,
             preprocess_bind_group_layout,
@@ -289,7 +286,7 @@ impl GPURSSorter {
             scatter_even_p,
             scatter_odd_p,
             subgroup_size: histogram_sg_size,
-        };
+        }
     }
 
     async fn test_sort(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
@@ -318,7 +315,10 @@ impl GPURSSorter {
         self.record_sort(&bind_group, n, &mut encoder);
         let idx = queue.submit([encoder.finish()]);
         device
-            .poll(wgpu::PollType::WaitForSubmissionIndex(idx))
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(idx),
+                timeout: None,
+            })
             .unwrap();
 
         let sorted = download_buffer::<f32>(&keyval_a, device, queue).await;
@@ -327,12 +327,12 @@ impl GPURSSorter {
                 return false;
             }
         }
-        return true;
+        true
     }
 
     // layouts used by the sorting pipeline, as the dispatch buffer has to be in separate bind group
     pub fn bind_group_layouts(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        return device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Radix bind group layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -396,11 +396,11 @@ impl GPURSSorter {
                     count: None,
                 },
             ],
-        });
+        })
     }
     // is used by the preprocess pipeline as the limitation of bind groups forces us to only use 1 bind group for the sort infos
     pub fn bind_group_layout_preprocess(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        return device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Radix bind group layout for preprocess pipeline"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -444,11 +444,11 @@ impl GPURSSorter {
                     count: None,
                 },
             ],
-        });
+        })
     }
     // used by the renderer, as read_only : false is not allowed without an extension
     pub fn bind_group_layout_rendering(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        return device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Radix bind group layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -472,28 +472,28 @@ impl GPURSSorter {
                     count: None,
                 },
             ],
-        });
+        })
     }
 
     fn get_scatter_histogram_sizes(keysize: usize) -> (usize, usize, usize, usize, usize, usize) {
         // as a general rule of thumb, scater_blocks_ru is equal to histo_blocks_ru, except the amount of elements in these two stages is different
 
         let scatter_block_kvs = HISTOGRAM_WG_SIZE * RS_SCATTER_BLOCK_ROWS;
-        let scatter_blocks_ru = (keysize + scatter_block_kvs - 1) / scatter_block_kvs;
+        let scatter_blocks_ru = keysize.div_ceil(scatter_block_kvs);
         let count_ru_scatter = scatter_blocks_ru * scatter_block_kvs;
 
         let histo_block_kvs = HISTOGRAM_WG_SIZE * RS_HISTOGRAM_BLOCK_ROWS;
-        let histo_blocks_ru = (count_ru_scatter + histo_block_kvs - 1) / histo_block_kvs;
+        let histo_blocks_ru = count_ru_scatter.div_ceil(histo_block_kvs);
         let count_ru_histo = histo_blocks_ru * histo_block_kvs;
 
-        return (
+        (
             scatter_block_kvs,
             scatter_blocks_ru,
             count_ru_scatter,
             histo_block_kvs,
             histo_blocks_ru,
             count_ru_histo,
-        );
+        )
     }
 
     pub fn create_keyval_buffers(
@@ -541,7 +541,7 @@ impl GPURSSorter {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        return (buffer_a, buffer_b, payload_a, payload_b);
+        (buffer_a, buffer_b, payload_a, payload_b)
     }
 
     // caclulates and allocates a buffer that is sufficient for holding all needed information for
@@ -576,17 +576,17 @@ impl GPURSSorter {
 
         let internal_size = (RS_KEYVAL_SIZE + scatter_blocks_ru - 1 + 1) * histo_size; // +1 safety
 
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Internal radix sort buffer"),
             size: internal_size as u64,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
-        });
-        return buffer;
+        })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_bind_group(
         &self,
         device: &wgpu::Device,
@@ -660,7 +660,7 @@ impl GPURSSorter {
                 },
             ],
         });
-        return (uniform_buffer, dispatch_buffer, bind_group);
+        (uniform_buffer, dispatch_buffer, bind_group)
     }
     pub fn create_bind_group_render(
         &self,
@@ -682,7 +682,7 @@ impl GPURSSorter {
                 },
             ],
         });
-        return rendering_bind_group;
+        rendering_bind_group
     }
     pub fn create_bind_group_preprocess(
         &self,
@@ -714,7 +714,7 @@ impl GPURSSorter {
                 },
             ],
         });
-        return bind_group;
+        bind_group
     }
 
     pub fn record_reset_indirect_buffer(
@@ -868,9 +868,9 @@ impl GPURSSorter {
         keysize: usize,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        self.record_calculate_histogram(&bind_group, keysize, encoder);
-        self.record_prefix_histogram(&bind_group, 4, encoder);
-        self.record_scatter_keys(&bind_group, 4, keysize, encoder);
+        self.record_calculate_histogram(bind_group, keysize, encoder);
+        self.record_prefix_histogram(bind_group, 4, encoder);
+        self.record_scatter_keys(bind_group, 4, keysize, encoder);
     }
     pub fn record_sort_indirect(
         &self,
@@ -901,7 +901,7 @@ fn upload_to_buffer<T: bytemuck::Pod>(
     encoder.copy_buffer_to_buffer(&staging_buffer, 0, buffer, 0, staging_buffer.size());
     queue.submit([encoder.finish()]);
 
-    let _ = device.poll(wgpu::PollType::Wait).unwrap();
+    let _ = device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     staging_buffer.destroy();
 }
 
@@ -927,7 +927,7 @@ async fn download_buffer<T: Clone>(
     let buffer_slice = download_buffer.slice(..);
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-    device.poll(wgpu::PollType::Wait).unwrap();
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     rx.receive().await.unwrap().unwrap();
     let data = buffer_slice.get_mapped_range();
     let r;
@@ -937,5 +937,5 @@ async fn download_buffer<T: Clone>(
         r = d.to_vec();
     }
 
-    return r;
+    r
 }

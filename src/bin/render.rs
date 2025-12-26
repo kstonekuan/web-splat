@@ -36,10 +36,10 @@ async fn render_views(
     renderer: &mut GaussianRenderer,
     pc: &mut PointCloud,
     cameras: Vec<SceneCamera>,
-    img_out: &PathBuf,
+    img_out: &std::path::Path,
     split: &str,
 ) {
-    let img_out = img_out.join(&split);
+    let img_out = img_out.join(split);
     println!("saving images to '{}'", img_out.to_string_lossy());
     std::fs::create_dir_all(img_out.clone()).unwrap();
 
@@ -88,9 +88,9 @@ async fn render_views(
             &mut encoder,
             device,
             queue,
-            &pc,
+            pc,
             SplattingArgs {
-                camera: camera,
+                camera,
                 viewport: resolution,
                 gaussian_scaling: 1.,
                 max_sh_deg: pc.sh_deg(),
@@ -114,12 +114,13 @@ async fn render_views(
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            renderer.render(&mut render_pass, &pc);
+            renderer.render(&mut render_pass, pc);
         }
         queue.submit(std::iter::once(encoder.finish()));
         let img = download_texture(&target, device, queue).await;
@@ -149,12 +150,12 @@ async fn main() {
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
 
     let pc_raw = GenericGaussianPointCloud::load(ply_file).unwrap();
-    let mut pc = PointCloud::new(&device, pc_raw).unwrap();
+    let mut pc = PointCloud::new(device, pc_raw).unwrap();
 
     let render_format = wgpu::TextureFormat::Rgba16Float;
 
     let mut renderer =
-        GaussianRenderer::new(&device, &queue, render_format, pc.sh_deg(), pc.compressed()).await;
+        GaussianRenderer::new(device, queue, render_format, pc.sh_deg(), pc.compressed()).await;
 
     render_views(
         device,
@@ -194,7 +195,7 @@ pub async fn download_texture(
     let texel_size: u32 = texture_format.block_copy_size(None).unwrap();
     let fb_size = texture.size();
     let align: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1;
-    let bytes_per_row = (texel_size * fb_size.width) + align & !align;
+    let bytes_per_row = ((texel_size * fb_size.width) + align) & !align;
 
     let output_buffer_size = (bytes_per_row * fb_size.height) as wgpu::BufferAddress;
 
@@ -213,7 +214,7 @@ pub async fn download_texture(
 
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfoBase{
+        wgpu::TexelCopyBufferInfoBase {
             buffer: &staging_buffer,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
@@ -226,8 +227,7 @@ pub async fn download_texture(
     let sub_idx = queue.submit(std::iter::once(encoder.finish()));
 
     let mut image = {
-        let data: wgpu::BufferView<'_> =
-            download_buffer(device, &staging_buffer, Some(sub_idx)).await;
+        let data: wgpu::BufferView = download_buffer(device, &staging_buffer, Some(sub_idx)).await;
 
         ImageBuffer::<Rgba<u8>, _>::from_raw(
             bytes_per_row / texel_size,
@@ -242,24 +242,28 @@ pub async fn download_texture(
 
     staging_buffer.unmap();
 
-    return image::imageops::crop(&mut image, 0, 0, fb_size.width, fb_size.height).to_image();
+    image::imageops::crop(&mut image, 0, 0, fb_size.width, fb_size.height).to_image()
 }
 
-async fn download_buffer<'a>(
+async fn download_buffer(
     device: &wgpu::Device,
-    buffer: &'a wgpu::Buffer,
+    buffer: &wgpu::Buffer,
     wait_idx: Option<wgpu::SubmissionIndex>,
-) -> wgpu::BufferView<'a> {
+) -> wgpu::BufferView {
     let slice = buffer.slice(..);
 
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-    device.poll(match wait_idx {
-        Some(idx) => wgpu::MaintainBase::WaitForSubmissionIndex(idx),
-        None => wgpu::MaintainBase::Wait,
-    }).unwrap();
+    device
+        .poll(match wait_idx {
+            Some(idx) => wgpu::PollType::Wait {
+                submission_index: Some(idx),
+                timeout: None,
+            },
+            None => wgpu::PollType::wait_indefinitely(),
+        })
+        .unwrap();
     rx.receive().await.unwrap().unwrap();
 
-    let view = slice.get_mapped_range();
-    return view;
+    slice.get_mapped_range()
 }

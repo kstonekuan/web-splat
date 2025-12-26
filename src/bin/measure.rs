@@ -60,9 +60,9 @@ async fn render_views(
         &mut encoder,
         device,
         queue,
-        &pc,
+        pc,
         SplattingArgs {
-            camera: camera,
+            camera,
             viewport: resolution,
             gaussian_scaling: 1.,
             max_sh_deg: pc.sh_deg(),
@@ -86,12 +86,13 @@ async fn render_views(
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        renderer.render(&mut render_pass, &pc);
+        renderer.render(&mut render_pass, pc);
     }
     queue.submit(std::iter::once(encoder.finish()));
 
@@ -108,9 +109,9 @@ async fn render_views(
                 &mut encoder,
                 device,
                 queue,
-                &pc,
+                pc,
                 SplattingArgs {
-                    camera: camera,
+                    camera,
                     viewport: resolution,
                     gaussian_scaling: 1.,
                     max_sh_deg: pc.sh_deg(),
@@ -134,17 +135,18 @@ async fn render_views(
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
+                        depth_slice: None,
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                renderer.render(&mut render_pass, &pc);
+                renderer.render(&mut render_pass, pc);
             }
             queue.submit(std::iter::once(encoder.finish()));
         }
     }
-    device.poll(wgpu::MaintainBase::Wait);
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
     let end = Instant::now();
     let duration = end - start;
     println!(
@@ -176,7 +178,7 @@ async fn main() {
     let mut reader = std::io::BufReader::new(file);
 
     let pc_raw = io::GenericGaussianPointCloud::load(&mut reader).unwrap();
-    let pc = PointCloud::new(&device, pc_raw).unwrap();
+    let pc = PointCloud::new(device, pc_raw).unwrap();
 
     let mut renderer = GaussianRenderer::new(
         device,

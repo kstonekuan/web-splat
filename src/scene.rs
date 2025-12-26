@@ -60,33 +60,27 @@ impl SceneCamera {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Hash, Default)]
 pub enum Split {
+    #[default]
     Train,
     Test,
 }
 
-impl Default for Split {
-    fn default() -> Self {
-        Split::Train
-    }
-}
-
-impl ToString for Split {
-    fn to_string(&self) -> String {
+impl std::fmt::Display for Split {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Split::Train => "train",
-            Split::Test => "test",
+            Split::Train => write!(f, "train"),
+            Split::Test => write!(f, "test"),
         }
-        .to_string()
     }
 }
 
-impl Into<PerspectiveCamera> for SceneCamera {
-    fn into(self) -> PerspectiveCamera {
-        let fovx = focal2fov(self.fx, self.width as f32);
-        let fovy = focal2fov(self.fy, self.height as f32);
-        let mut rot = Matrix3::from(self.rotation);
+impl From<SceneCamera> for PerspectiveCamera {
+    fn from(val: SceneCamera) -> Self {
+        let fovx = focal2fov(val.fx, val.width as f32);
+        let fovy = focal2fov(val.fy, val.height as f32);
+        let mut rot = Matrix3::from(val.rotation);
         if rot.determinant() < 0. {
             // make sure determinant is 1
             // flip y axis if determinant is -1
@@ -95,10 +89,10 @@ impl Into<PerspectiveCamera> for SceneCamera {
             rot.z[1] = -rot.z[1];
         }
         PerspectiveCamera {
-            position: self.position.into(),
+            position: val.position.into(),
             rotation: rot.into(),
             projection: PerspectiveProjection::new(
-                Vector2::new(self.width, self.height),
+                Vector2::new(val.width, val.height),
                 Vector2::new(fovx, fovy),
                 0.01,
                 100.,
@@ -164,10 +158,10 @@ impl Scene {
                 .filter_map(|(_, c)| (c.split == split).then_some(c.clone()))
                 .collect()
         } else {
-            self.cameras.iter().map(|(_, c)| c.clone()).collect()
+            self.cameras.values().cloned().collect()
         };
         c.sort_by_key(|c| c.id);
-        return c;
+        c
     }
 
     pub fn extend(&self) -> f32 {

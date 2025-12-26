@@ -6,10 +6,10 @@ use half::f16;
 use image::EncodableLayout;
 use npyz::npz::{self, NpzArchive};
 
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use crate::{
     pointcloud::{Covariance3D, GaussianCompressed, GaussianQuantization, Quantization},
@@ -123,7 +123,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let rotation: Vec<Quaternion<f32>> = try_get_npz_array(&mut self.npz_file, "rotation")?
             .as_slice()
             .iter()
-            .map(|c: &i8| ((*c as f32 - rotation_zero_point) * rotation_scale))
+            .map(|c: &i8| (*c as f32 - rotation_zero_point) * rotation_scale)
             .collect::<Vec<f32>>()
             .chunks_exact(4)
             .map(|c| Quaternion::new(c[0], c[1], c[2], c[3]).normalize())
@@ -185,7 +185,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let sh_coeffs_length = num_sh_coeffs as usize * 3;
         let rest_num_coefs = sh_coeffs_length - 3;
         for i in 0..(features_dc.len() / 3) {
-            sh_coefs.write_i8(features_dc[i * 3 + 0]).unwrap();
+            sh_coefs.write_i8(features_dc[i * 3]).unwrap();
             sh_coefs.write_i8(features_dc[i * 3 + 1]).unwrap();
             sh_coefs.write_i8(features_dc[i * 3 + 2]).unwrap();
             for j in 0..rest_num_coefs {
@@ -197,7 +197,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let covars = (0..rotation.len())
             .map(|i| {
                 let cov = build_cov(rotation[i], scaling[i]);
-                Covariance3D(cov.map(|v| f16::from_f32(v)))
+                Covariance3D(cov.map(f16::from_f32))
             })
             .collect();
 
@@ -211,7 +211,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             scaling_factor: Quantization::new(scaling_factor_zero_point, scaling_factor_scale),
         };
 
-        return Ok(GenericGaussianPointCloud::new_compressed(
+        Ok(GenericGaussianPointCloud::new_compressed(
             gaussians,
             sh_coefs,
             sh_deg,
@@ -221,7 +221,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             self.background_color,
             Some(covars),
             Some(quantization),
-        ));
+        ))
     }
 
     fn magic_bytes() -> &'static [u8] {
@@ -266,7 +266,7 @@ fn get_npz_value<T: npyz::Deserialize + Copy>(
     field_name: &str,
 ) -> Result<Option<T>, anyhow::Error> {
     if let Some(arr) = get_npz_array_optional(reader, field_name)? {
-        arr.get(0)
+        arr.first()
             .ok_or(anyhow::format_err!("array empty"))
             .map(|v| Some(*v))
     } else {

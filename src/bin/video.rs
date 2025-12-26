@@ -39,6 +39,7 @@ struct Opt {
     fps: u32,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn render_tracking_shot(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -142,6 +143,7 @@ async fn render_tracking_shot(
                         load: wgpu::LoadOp::Clear(bg),
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -214,7 +216,7 @@ pub async fn download_texture(
     let texel_size: u32 = texture_format.block_copy_size(None).unwrap();
     let fb_size = texture.size();
     let align: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1;
-    let bytes_per_row = (texel_size * fb_size.width) + align & !align;
+    let bytes_per_row = ((texel_size * fb_size.width) + align) & !align;
 
     let output_buffer_size = (bytes_per_row * fb_size.height) as wgpu::BufferAddress;
 
@@ -232,9 +234,9 @@ pub async fn download_texture(
 
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
-        wgpu::ImageCopyBufferBase {
+        wgpu::TexelCopyBufferInfoBase {
             buffer: &staging_buffer,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(fb_size.height),
@@ -261,7 +263,7 @@ pub async fn download_texture(
         ImageBuffer::<Rgb<u8>, _>::from_raw(fb_size.width, fb_size.height, buf).unwrap()
     };
 
-    return image::imageops::crop(&mut image, 0, 0, fb_size.width, fb_size.height).to_image();
+    image::imageops::crop(&mut image, 0, 0, fb_size.width, fb_size.height).to_image()
 }
 
 async fn download_buffer<T: Clone>(
@@ -286,7 +288,7 @@ async fn download_buffer<T: Clone>(
     let buffer_slice = download_buffer.slice(..);
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-    device.poll(wgpu::MaintainBase::Wait).unwrap();
+    let _ = device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     rx.receive().await.unwrap().unwrap();
     let data = buffer_slice.get_mapped_range();
     let r;
@@ -296,5 +298,5 @@ async fn download_buffer<T: Clone>(
         r = d.to_vec();
     }
 
-    return r;
+    r
 }

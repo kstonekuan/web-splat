@@ -1,8 +1,8 @@
-#[cfg(target_arch = "wasm32")]
-use web_time::Duration;
 use splines::{Interpolate, Key};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
+#[cfg(target_arch = "wasm32")]
+use web_time::Duration;
 
 use cgmath::{EuclideanSpace, InnerSpace, Point3, Quaternion, Rad, VectorSpace};
 
@@ -60,7 +60,7 @@ impl TrackingShot {
                 .enumerate()
                 .map(|(i, c)| {
                     let v = (i as f32 - 1.) / (cameras.len()) as f32;
-                    Key::new(v, c.clone(), splines::Interpolation::CatmullRom)
+                    Key::new(v, *c, splines::Interpolation::CatmullRom)
                 }),
         );
 
@@ -162,7 +162,7 @@ impl Interpolate<f32> for PerspectiveProjection {
     }
 
     fn lerp(t: f32, a: Self, b: Self) -> Self {
-        return a.lerp(&b, t);
+        a.lerp(&b, t)
     }
 
     fn cosine(_t: f32, _a: Self, _b: Self) -> Self {
@@ -267,11 +267,11 @@ impl<T> Animation<T> {
                 }
             }
         }
-        return self.sampler.sample(self.progress());
+        self.sampler.sample(self.progress())
     }
 
     pub fn progress(&self) -> f32 {
-        return 1. - self.time_left.as_secs_f32() / self.duration.as_secs_f32();
+        1. - self.time_left.as_secs_f32() / self.duration.as_secs_f32()
     }
 
     pub fn set_progress(&mut self, v: f32) {
@@ -300,5 +300,5 @@ fn unroll(rot: [Quaternion<f32>; 4]) -> [Quaternion<f32>; 4] {
             rot[i] = -rot[i];
         }
     }
-    return rot;
+    rot
 }

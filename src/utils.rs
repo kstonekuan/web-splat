@@ -127,9 +127,9 @@ impl GPUStopwatch {
                 tx.send(durations).unwrap();
             },
         );
-        let _ = device.poll(wgpu::PollType::Wait).unwrap();
+        let _ = device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let durations: HashMap<String, Duration> = rx.receive().await.unwrap();
-        return durations;
+        durations
     }
 }
 
@@ -185,7 +185,7 @@ pub fn sh_deg_from_num_coefs(n: u32) -> Option<u32> {
     if sqrt.fract() != 0. {
         return None;
     }
-    return Some((sqrt as u32) - 1);
+    Some((sqrt as u32) - 1)
 }
 
 /// builds a covariance matrix based on a quaterion and rotation
@@ -199,7 +199,7 @@ pub fn build_cov<T: BaseFloat>(rot: Quaternion<T>, scale: Vector3<T>) -> [T; 6] 
 
     let m = l * l.transpose();
 
-    return [m[0][0], m[0][1], m[0][2], m[1][1], m[1][2], m[2][2]];
+    [m[0][0], m[0][1], m[0][2], m[1][1], m[1][2], m[2][2]]
 }
 
 /// numerical stable sigmoid function

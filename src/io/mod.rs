@@ -42,7 +42,7 @@ pub struct GenericGaussianPointCloud {
 }
 
 impl GenericGaussianPointCloud {
-    pub fn load<'a, R: Read + Seek>(f: R) -> Result<Self, anyhow::Error> {
+    pub fn load<R: Read + Seek>(f: R) -> Result<Self, anyhow::Error> {
         let mut signature: [u8; 4] = [0; 4];
         let mut f = f;
         f.read_exact(&mut signature)?;
@@ -57,9 +57,10 @@ impl GenericGaussianPointCloud {
             let mut npz_reader = NpzReader::new(&mut reader)?;
             return npz_reader.read();
         }
-        return Err(anyhow::anyhow!("Unknown file format"));
+        Err(anyhow::anyhow!("Unknown file format"))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new(
         gaussians: Vec<Gaussian>,
         sh_coefs: Vec<[[f16; 3]; 16]>,
@@ -97,7 +98,7 @@ impl GenericGaussianPointCloud {
             background_color,
             covars,
             quantization,
-            up: up,
+            up,
             center,
             aabb: bbox,
             compressed: false,
@@ -105,6 +106,7 @@ impl GenericGaussianPointCloud {
     }
 
     #[cfg(feature = "npz")]
+    #[allow(clippy::too_many_arguments)]
     fn new_compressed(
         gaussians: Vec<GaussianCompressed>,
         sh_coefs: Vec<u8>,
@@ -142,7 +144,7 @@ impl GenericGaussianPointCloud {
             background_color,
             covars,
             quantization,
-            up: up,
+            up,
             center,
             aabb: bbox,
             compressed: true,
@@ -191,9 +193,9 @@ fn plane_from_points(points: &[Point3<f32>]) -> (Point3<f32>, Option<Vector3<f32
         z: 0.0f32,
     };
     for p in points {
-        sum = &sum + p.to_vec();
+        sum += p.to_vec();
     }
-    let centroid = &sum * (1.0 / (n as f32));
+    let centroid = sum * (1.0 / (n as f32));
     if n < 3 {
         return (centroid, None);
     }
@@ -240,7 +242,7 @@ fn plane_from_points(points: &[Point3<f32>]) -> (Point3<f32>, Option<Vector3<f32
         if weighted_dir.dot(axis_dir) < 0.0 {
             weight = -weight;
         }
-        weighted_dir += &axis_dir * weight;
+        weighted_dir += axis_dir * weight;
     }
 
     {
@@ -254,7 +256,7 @@ fn plane_from_points(points: &[Point3<f32>]) -> (Point3<f32>, Option<Vector3<f32
         if weighted_dir.dot(axis_dir) < 0.0 {
             weight = -weight;
         }
-        weighted_dir += &axis_dir * weight;
+        weighted_dir += axis_dir * weight;
     }
 
     {
@@ -268,7 +270,7 @@ fn plane_from_points(points: &[Point3<f32>]) -> (Point3<f32>, Option<Vector3<f32
         if weighted_dir.dot(axis_dir) < 0.0 {
             weight = -weight;
         }
-        weighted_dir += &axis_dir * weight;
+        weighted_dir += axis_dir * weight;
     }
 
     let mut normal = weighted_dir.normalize();

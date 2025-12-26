@@ -20,8 +20,8 @@ pub struct GaussianCompressed {
     pub geometry_idx: u32,
     pub sh_idx: u32,
 }
-unsafe impl bytemuck::Zeroable for GaussianCompressed{}
-unsafe impl bytemuck::Pod for GaussianCompressed{}
+unsafe impl bytemuck::Zeroable for GaussianCompressed {}
+unsafe impl bytemuck::Pod for GaussianCompressed {}
 
 impl Default for GaussianCompressed {
     fn default() -> Self {
@@ -40,20 +40,20 @@ impl Default for Gaussian {
 pub struct Gaussian {
     pub xyz: Point3<f32>,
     pub opacity: f16,
-    _pad:f16,
+    _pad: f16,
     pub cov: [f16; 6],
 }
 
-unsafe impl bytemuck::Zeroable for Gaussian{}
-unsafe impl bytemuck::Pod for Gaussian{}
+unsafe impl bytemuck::Zeroable for Gaussian {}
+unsafe impl bytemuck::Pod for Gaussian {}
 
-impl Gaussian{
-    pub fn new(xyz:Point3<f32>,opacity:f16,cov:[f16;6])->Self{
-        Self{
-            xyz:xyz,
-            opacity:opacity,
-            cov:cov,
-            _pad:f16::ZERO,
+impl Gaussian {
+    pub fn new(xyz: Point3<f32>, opacity: f16, cov: [f16; 6]) -> Self {
+        Self {
+            xyz,
+            opacity,
+            cov,
+            _pad: f16::ZERO,
         }
     }
 }
@@ -184,7 +184,7 @@ impl PointCloud {
             num_points: pc.num_points as u32,
             sh_deg: pc.sh_deg,
             compressed: pc.compressed(),
-            bbox: pc.aabb.into(),
+            bbox: pc.aabb,
             center: pc.center,
             up: pc.up,
             mip_splatting: pc.mip_splatting,
@@ -397,7 +397,7 @@ pub struct GaussianQuantization {
 
 #[repr(C)]
 #[derive(Zeroable, Clone, Copy, Debug, PartialEq)]
-pub struct Aabb<F: Float + BaseNum> {
+pub struct Aabb<F> {
     pub min: Point3<F>,
     pub max: Point3<F>,
 }
@@ -462,11 +462,11 @@ impl<F: Float + BaseNum> Aabb<F> {
     }
 }
 
-impl Into<Aabb<f32>> for Aabb<f16> {
-    fn into(self) -> Aabb<f32> {
+impl From<Aabb<f16>> for Aabb<f32> {
+    fn from(val: Aabb<f16>) -> Self {
         Aabb {
-            min: self.min.map(|v| v.into()),
-            max: self.max.map(|v| v.into()),
+            min: val.min.map(|v| v.into()),
+            max: val.max.map(|v| v.into()),
         }
     }
 }

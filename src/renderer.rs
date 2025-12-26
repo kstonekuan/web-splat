@@ -182,10 +182,10 @@ impl GaussianRenderer {
                     tx.send(num_points).unwrap();
                 },
             );
-            device.poll(wgpu::MaintainBase::Wait).unwrap();
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
             rx.receive().await.unwrap()
         };
-        return n;
+        n
     }
 
     pub fn prepare(
@@ -213,7 +213,7 @@ impl GaussianRenderer {
         GPURSSorter::record_reset_indirect_buffer(
             &self.sorter_suff.as_ref().unwrap().sorter_dis,
             &self.sorter_suff.as_ref().unwrap().sorter_uni,
-            &queue,
+            queue,
         );
 
         // convert 3D gaussian splats to 2D gaussian splats
@@ -221,7 +221,7 @@ impl GaussianRenderer {
             stopwatch.start(encoder, "preprocess").unwrap();
         }
 
-        self.preprocess(encoder, queue, &pc, render_settings);
+        self.preprocess(encoder, queue, pc, render_settings);
         if let Some(stopwatch) = stopwatch {
             stopwatch.stop(encoder, "preprocess").unwrap();
         }
@@ -388,12 +388,12 @@ impl PreprocessPipeline {
         {:}",
             sh_deg, shader_src
         );
-        return shader;
+        shader
     }
 
-    fn run<'a>(
+    fn run(
         &mut self,
-        encoder: &'a mut wgpu::CommandEncoder,
+        encoder: &mut wgpu::CommandEncoder,
         pc: &PointCloud,
         camera: &UniformBuffer<CameraUniform>,
         render_settings: &UniformBuffer<SplattingArgsUniform>,
@@ -520,7 +520,7 @@ impl Display {
                 },
             ],
         });
-        return (texture_view, bind_group);
+        (texture_view, bind_group)
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -570,6 +570,7 @@ impl Display {
                     load: wgpu::LoadOp::Clear(background_color),
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             ..Default::default()
         });
@@ -583,7 +584,7 @@ impl Display {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug,PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct SplattingArgs {
     pub camera: PerspectiveCamera,
     pub viewport: Vector2<u32>,
@@ -612,7 +613,7 @@ pub struct SplattingArgsUniform {
 
     walltime: f32,
     scene_extend: f32,
-    _pad: [u32;2],
+    _pad: [u32; 2],
 
     scene_center: Vector4<f32>,
 }

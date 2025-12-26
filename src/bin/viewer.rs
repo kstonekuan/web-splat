@@ -23,7 +23,7 @@ struct Opt {
 
 /// check if there is a scene file in the same directory or parent directory as the input file
 #[allow(unused)]
-fn try_find_scene_file(input: &PathBuf, depth: u32) -> Option<PathBuf> {
+fn try_find_scene_file(input: &std::path::Path, depth: u32) -> Option<PathBuf> {
     if let Some(parent) = input.parent() {
         let scene = parent.join("cameras.json");
         if scene.exists() {
@@ -32,9 +32,9 @@ fn try_find_scene_file(input: &PathBuf, depth: u32) -> Option<PathBuf> {
         if depth == 0 {
             return None;
         }
-        return try_find_scene_file(&parent.to_path_buf(), depth - 1);
+        return try_find_scene_file(parent, depth - 1);
     }
-    return None;
+    None
 }
 
 #[cfg(not(target_arch = "wasm32"))]

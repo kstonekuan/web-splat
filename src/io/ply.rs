@@ -89,14 +89,14 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
 
         let cov = build_cov(rot, scale);
 
-        return Ok((
+        Ok((
             Gaussian::new(
                 Point3::from(pos).cast().unwrap(),
                 f16::from_f32(opacity),
-                cov.map(|x| f16::from_f32(x)),
+                cov.map(f16::from_f32),
             ),
-            sh.map(|x| x.map(|y| f16::from_f32(y))),
-        ));
+            sh.map(|x| x.map(f16::from_f32)),
+        ))
     }
 
     fn file_sh_deg(header: &ply::Header) -> Result<u32, anyhow::Error> {
@@ -125,7 +125,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             .comments
             .iter()
             .find(|c| c.contains("mip"))
-            .map(|c| c.split('=').last().unwrap().parse::<bool>())
+            .map(|c| c.split('=').next_back().unwrap().parse::<bool>())
             .transpose()?)
     }
     fn kernel_size(header: &ply::Header) -> Result<Option<f32>, anyhow::Error> {
@@ -133,7 +133,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             .comments
             .iter()
             .find(|c| c.contains("kernel_size"))
-            .map(|c| c.split('=').last().unwrap().parse::<f32>())
+            .map(|c| c.split('=').next_back().unwrap().parse::<f32>())
             .transpose()?)
     }
 
@@ -143,7 +143,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             .iter()
             .find(|c| c.contains("background_color"))
             .map(|c| {
-                let value = c.split('=').last();
+                let value = c.split('=').next_back();
                 let parts = value.map(|c| {
                     c.split(",")
                         .map(|v| v.parse::<f32>())
@@ -182,7 +182,7 @@ impl<R: io::Read + io::Seek> PointCloudReader for PlyReader<R> {
                 }
             }
         };
-        return Ok(GenericGaussianPointCloud::new(
+        Ok(GenericGaussianPointCloud::new(
             gaussians,
             sh_coefs,
             self.sh_deg,
@@ -192,7 +192,7 @@ impl<R: io::Read + io::Seek> PointCloudReader for PlyReader<R> {
             self.background_color,
             None,
             None,
-        ));
+        ))
     }
 
     fn magic_bytes() -> &'static [u8] {
