@@ -11,6 +11,7 @@ use crate::pointcloud::{Aabb, Covariance3D, Gaussian, GaussianCompressed, Gaussi
 #[cfg(feature = "npz")]
 use self::npz::NpzReader;
 
+pub use self::ply::EmbeddedCamera;
 use self::ply::PlyReader;
 
 #[cfg(feature = "npz")]
@@ -39,6 +40,7 @@ pub struct GenericGaussianPointCloud {
     pub up: Option<Vector3<f32>>,
     pub center: Point3<f32>,
     pub aabb: Aabb<f32>,
+    pub embedded_camera: Option<EmbeddedCamera>,
 }
 
 impl GenericGaussianPointCloud {
@@ -71,6 +73,7 @@ impl GenericGaussianPointCloud {
         background_color: Option<[f32; 3]>,
         covars: Option<Vec<Covariance3D>>,
         quantization: Option<GaussianQuantization>,
+        embedded_camera: Option<EmbeddedCamera>,
     ) -> Self {
         let mut bbox: Aabb<f32> = Aabb::zeroed();
         for v in &gaussians {
@@ -102,6 +105,7 @@ impl GenericGaussianPointCloud {
             center,
             aabb: bbox,
             compressed: false,
+            embedded_camera,
         }
     }
 
@@ -148,6 +152,7 @@ impl GenericGaussianPointCloud {
             center,
             aabb: bbox,
             compressed: true,
+            embedded_camera: None,
         }
     }
 

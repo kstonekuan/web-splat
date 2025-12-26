@@ -389,6 +389,9 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                     ui.label("Start/Pause Tracking shot");
                     ui.label("T");
                     ui.end_row();
+                    ui.label("Reset View");
+                    ui.label("H");
+                    ui.end_row();
                 });
         });
 

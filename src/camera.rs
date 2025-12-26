@@ -1,7 +1,7 @@
 use cgmath::*;
 use std::hash::{Hash, Hasher};
 
-use crate::{animation::Lerp, pointcloud::Aabb};
+use crate::{animation::Lerp, io::EmbeddedCamera, pointcloud::Aabb};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PerspectiveCamera {
@@ -239,4 +239,55 @@ pub fn focal2fov(focal: f32, pixels: f32) -> Rad<f32> {
 
 pub fn fov2focal(fov: Rad<f32>, pixels: f32) -> f32 {
     pixels / (2. * (fov * 0.5).tan())
+}
+
+impl From<EmbeddedCamera> for PerspectiveCamera {
+    fn from(cam: EmbeddedCamera) -> Self {
+        // Extract position from the 4th column of the extrinsic matrix (camera-to-world)
+        let position = Point3::new(
+            cam.extrinsic[0][3],
+            cam.extrinsic[1][3],
+            cam.extrinsic[2][3],
+        );
+
+        // Extract rotation from the upper-left 3x3 of the extrinsic matrix
+        let mut rot = Matrix3::new(
+            cam.extrinsic[0][0],
+            cam.extrinsic[0][1],
+            cam.extrinsic[0][2],
+            cam.extrinsic[1][0],
+            cam.extrinsic[1][1],
+            cam.extrinsic[1][2],
+            cam.extrinsic[2][0],
+            cam.extrinsic[2][1],
+            cam.extrinsic[2][2],
+        );
+
+        // Ensure determinant is positive (proper rotation)
+        if rot.determinant() < 0. {
+            rot.x[1] = -rot.x[1];
+            rot.y[1] = -rot.y[1];
+            rot.z[1] = -rot.z[1];
+        }
+
+        // Extract focal lengths from intrinsic matrix
+        let fx = cam.intrinsic[0][0];
+        let fy = cam.intrinsic[1][1];
+        let (width, height) = cam.image_size;
+
+        // Convert focal lengths to field of view
+        let fovx = focal2fov(fx, width as f32);
+        let fovy = focal2fov(fy, height as f32);
+
+        PerspectiveCamera {
+            position,
+            rotation: rot.into(),
+            projection: PerspectiveProjection::new(
+                Vector2::new(width, height),
+                Vector2::new(fovx, fovy),
+                0.01,
+                100.,
+            ),
+        }
+    }
 }

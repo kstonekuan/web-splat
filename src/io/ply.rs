@@ -14,6 +14,17 @@ use crate::{
 
 use super::{GenericGaussianPointCloud, PointCloudReader};
 
+/// Camera data embedded in ML-SHARP PLY files
+#[derive(Debug, Clone)]
+pub struct EmbeddedCamera {
+    /// 4x4 camera-to-world extrinsic matrix (row-major)
+    pub extrinsic: [[f32; 4]; 4],
+    /// 3x3 intrinsic matrix (row-major): [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]
+    pub intrinsic: [[f32; 3]; 3],
+    /// Image dimensions (width, height)
+    pub image_size: (u32, u32),
+}
+
 pub struct PlyReader<R: Read + Seek> {
     header: ply_rs::ply::Header,
     reader: BufReader<R>,
@@ -23,6 +34,7 @@ pub struct PlyReader<R: Read + Seek> {
     kernel_size: Option<f32>,
     background_color: Option<[f32; 3]>,
     has_normals: bool,
+    has_ml_sharp_camera: bool,
 }
 
 impl<R: io::Read + io::Seek> PlyReader<R> {
@@ -38,6 +50,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             .map_err(|e| log::warn!("could not parse background_color: {}", e))
             .unwrap_or_default();
         let has_normals = Self::has_normals(&header);
+        let has_ml_sharp_camera = Self::has_ml_sharp_camera(&header);
         Ok(Self {
             header,
             reader,
@@ -47,11 +60,53 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             kernel_size,
             background_color,
             has_normals,
+            has_ml_sharp_camera,
         })
     }
 
     fn has_normals(header: &ply::Header) -> bool {
         header.elements["vertex"].properties.contains_key("nx")
+    }
+
+    fn has_ml_sharp_camera(header: &ply::Header) -> bool {
+        header.elements.contains_key("extrinsic")
+            && header.elements.contains_key("intrinsic")
+            && header.elements.contains_key("image_size")
+    }
+
+    fn read_ml_sharp_camera<B: ByteOrder>(&mut self) -> anyhow::Result<EmbeddedCamera> {
+        // Read 16 floats for 4x4 extrinsic matrix
+        let mut extrinsic = [[0f32; 4]; 4];
+        for row in &mut extrinsic {
+            self.reader.read_f32_into::<B>(row)?;
+        }
+
+        // Read 9 floats for 3x3 intrinsic matrix
+        let mut intrinsic = [[0f32; 3]; 3];
+        for row in &mut intrinsic {
+            self.reader.read_f32_into::<B>(row)?;
+        }
+
+        // Read 2 uints for image size (width, height)
+        let width = self.reader.read_u32::<B>()?;
+        let height = self.reader.read_u32::<B>()?;
+
+        // Skip remaining ML-SHARP elements: frame (2 ints), disparity (2 floats),
+        // color_space (1 uchar), version (3 uchars)
+        let mut _frame = [0i32; 2];
+        self.reader.read_i32_into::<B>(&mut _frame)?;
+        let mut _disparity = [0f32; 2];
+        self.reader.read_f32_into::<B>(&mut _disparity)?;
+        let mut _color_space = [0u8; 1];
+        self.reader.read_exact(&mut _color_space)?;
+        let mut _version = [0u8; 3];
+        self.reader.read_exact(&mut _version)?;
+
+        Ok(EmbeddedCamera {
+            extrinsic,
+            intrinsic,
+            image_size: (width, height),
+        })
     }
 
     fn read_line<B: ByteOrder>(
@@ -174,23 +229,37 @@ impl<R: io::Read + io::Seek> PointCloudReader for PlyReader<R> {
         let mut gaussians = Vec::with_capacity(self.num_points);
         let mut sh_coefs = Vec::with_capacity(self.num_points);
         let has_normals = self.has_normals;
-        match self.header.encoding {
-            ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
+        let has_ml_sharp_camera = self.has_ml_sharp_camera;
+
+        let embedded_camera = match self.header.encoding {
+            ply_rs::ply::Encoding::Ascii => todo!("ascii ply format not supported"),
             ply_rs::ply::Encoding::BinaryBigEndian => {
                 for _ in 0..self.num_points {
                     let (g, s) = self.read_line::<BigEndian>(self.sh_deg as usize, has_normals)?;
                     gaussians.push(g);
                     sh_coefs.push(s);
                 }
+                if has_ml_sharp_camera {
+                    Some(self.read_ml_sharp_camera::<BigEndian>()?)
+                } else {
+                    None
+                }
             }
             ply_rs::ply::Encoding::BinaryLittleEndian => {
                 for _ in 0..self.num_points {
-                    let (g, s) = self.read_line::<LittleEndian>(self.sh_deg as usize, has_normals)?;
+                    let (g, s) =
+                        self.read_line::<LittleEndian>(self.sh_deg as usize, has_normals)?;
                     gaussians.push(g);
                     sh_coefs.push(s);
                 }
+                if has_ml_sharp_camera {
+                    Some(self.read_ml_sharp_camera::<LittleEndian>()?)
+                } else {
+                    None
+                }
             }
         };
+
         Ok(GenericGaussianPointCloud::new(
             gaussians,
             sh_coefs,
@@ -201,6 +270,7 @@ impl<R: io::Read + io::Seek> PointCloudReader for PlyReader<R> {
             self.background_color,
             None,
             None,
+            embedded_camera,
         ))
     }
 

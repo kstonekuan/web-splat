@@ -153,6 +153,7 @@ pub struct WindowContext {
     #[allow(dead_code)]
     cameras_save_path: String,
     stopwatch: Option<GPUStopwatch>,
+    initial_camera: Option<PerspectiveCamera>,
 }
 
 impl WindowContext {
@@ -209,6 +210,11 @@ impl WindowContext {
         surface.configure(device, &config);
 
         let pc_raw = io::GenericGaussianPointCloud::load(pc_file)?;
+
+        // Extract embedded camera before creating PointCloud (which consumes pc_raw)
+        let initial_camera: Option<PerspectiveCamera> =
+            pc_raw.embedded_camera.clone().map(|c| c.into());
+
         let pc = PointCloud::new(device, pc_raw)?;
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
@@ -217,16 +223,23 @@ impl WindowContext {
 
         let aabb = pc.bbox();
         let aspect = size.width as f32 / size.height as f32;
-        let view_camera = PerspectiveCamera::new(
-            aabb.center() - Vector3::new(1., 1., 1.) * aabb.radius() * 0.5,
-            Quaternion::one(),
-            PerspectiveProjection::new(
-                Vector2::new(size.width, size.height),
-                Vector2::new(Deg(45.), Deg(45. / aspect)),
-                0.01,
-                1000.,
-            ),
-        );
+
+        // Use embedded camera if available, otherwise compute default view
+        let view_camera = if let Some(mut cam) = initial_camera {
+            cam.fit_near_far(aabb);
+            cam
+        } else {
+            PerspectiveCamera::new(
+                aabb.center() - Vector3::new(1., 1., 1.) * aabb.radius() * 0.5,
+                Quaternion::one(),
+                PerspectiveProjection::new(
+                    Vector2::new(size.width, size.height),
+                    Vector2::new(Deg(45.), Deg(45. / aspect)),
+                    0.01,
+                    1000.,
+                ),
+            )
+        };
 
         let mut controller = CameraController::new(0.1, 0.05);
         controller.center = pc.center();
@@ -286,6 +299,7 @@ impl WindowContext {
             scene_file_path: None,
 
             stopwatch,
+            initial_camera,
         })
     }
 
@@ -593,6 +607,18 @@ impl WindowContext {
             .resize(self.config.width, self.config.height);
     }
 
+    /// Reset camera to the initial view (embedded camera from PLY or computed default)
+    pub fn reset_view(&mut self) {
+        if let Some(cam) = self.initial_camera {
+            self.set_camera(cam, Duration::from_millis(300));
+        }
+    }
+
+    /// Check if an initial camera (embedded in PLY) is available
+    pub fn has_initial_camera(&self) -> bool {
+        self.initial_camera.is_some()
+    }
+
     fn save_view(&mut self) {
         let max_scene_id = if let Some(scene) = &self.scene {
             scene.cameras(None).iter().map(|c| c.id).max().unwrap_or(0)
@@ -748,6 +774,9 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                         state.ui_visible = !state.ui_visible;
                     }else if key == KeyCode::KeyC{
                         state.save_view();
+                    }else if key == KeyCode::KeyH{
+                        // H for Home - reset to initial view
+                        state.reset_view();
                     } else  if key == KeyCode::KeyR && state.controller.alt_pressed{
                         if let Err(err) = state.reload(){
                             log::error!("failed to reload volume: {:?}", err);

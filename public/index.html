@@ -201,6 +201,35 @@
             background: rgba(255, 255, 255, 0.2);
             border-color: rgba(255, 255, 255, 0.5);
         }
+
+        .controls {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .footer-links {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            font-size: 12px;
+            z-index: 100;
+            display: flex;
+            gap: 16px;
+        }
+
+        .footer-links a {
+            color: rgba(255, 255, 255, 0.4);
+            text-decoration: none;
+        }
+
+        .footer-links a:hover {
+            color: rgba(255, 255, 255, 0.7);
+        }
     </style>
     <div id="spinner" style="display: none;">
         <svg>
@@ -218,7 +247,14 @@
             <p class="drop-subtitle">or click to browse</p>
         </div>
     </div>
-    <button id="reset-btn" class="reset-btn" hidden>New File</button>
+    <div id="controls" class="controls" hidden>
+        <button id="reset-view-btn" class="reset-btn" style="position: static;">Reset View</button>
+        <button id="reset-btn" class="reset-btn" style="position: static;">New File</button>
+    </div>
+    <div class="footer-links">
+        <a href="https://github.com/kstonekuan/web-splat" target="_blank">GitHub</a>
+        <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank">Apache 2.0</a>
+    </div>
     <div id="no-webgpu" class="alert" style="display: none;">
         <h1>WebGPU not supported</h1>
         <p>Your browser does not support WebGPU.<br><a
@@ -258,6 +294,7 @@
 
         const dropZone = document.getElementById("drop-zone");
         const fileInput = document.getElementById("file-input");
+        const controls = document.getElementById("controls");
         const resetBtn = document.getElementById("reset-btn");
         const spinner = document.getElementById("spinner");
         const loadingDisplay = document.getElementById("loading-display");
@@ -291,7 +328,16 @@
             }
         });
 
-        // Reset button
+        // Reset view button - simulates 'H' keypress
+        document.getElementById("reset-view-btn").addEventListener("click", () => {
+            const canvas = document.getElementById("window-canvas");
+            if (canvas) {
+                canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyH", bubbles: true }));
+                canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyH", bubbles: true }));
+            }
+        });
+
+        // New file button
         resetBtn.addEventListener("click", () => {
             window.location.reload();
         });
@@ -312,7 +358,7 @@
                 run_wasm(data, null, file.name, null);
 
                 spinner.style.display = "none";
-                resetBtn.hidden = false;
+                controls.hidden = false;
             } catch (e) {
                 spinner.style.display = "none";
                 showError(file.name, e);
