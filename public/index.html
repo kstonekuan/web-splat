@@ -127,6 +127,80 @@
             -ms-user-select: none;
             user-select: none;
         }
+
+        .drop-zone {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 400px;
+            height: 250px;
+            border: 2px dashed rgba(255, 255, 255, 0.4);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            z-index: 100;
+        }
+
+        .drop-zone:hover {
+            border-color: rgba(255, 255, 255, 0.7);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .drop-zone.dragover {
+            border-color: #fff;
+            background: rgba(255, 255, 255, 0.1);
+            border-style: solid;
+        }
+
+        .drop-zone.hidden {
+            display: none;
+        }
+
+        .drop-zone-content {
+            text-align: center;
+            pointer-events: none;
+        }
+
+        .drop-icon {
+            font-size: 48px;
+            margin: 0 0 16px 0;
+        }
+
+        .drop-title {
+            font-size: 18px;
+            margin: 0 0 8px 0;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .drop-subtitle {
+            font-size: 14px;
+            margin: 0;
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        .reset-btn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            z-index: 1000;
+        }
+
+        .reset-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.5);
+        }
     </style>
     <div id="spinner" style="display: none;">
         <svg>
@@ -136,10 +210,15 @@
                 alignment-baseline="middle">10%</text>
         </svg>
     </div>
-    <div id="no-file" class="alert" style="display: none;">
-        <h1>No file specified</h1>
-        <p>There is no file specified in the URL.</p>
+    <div id="drop-zone" class="drop-zone">
+        <input type="file" id="file-input" accept=".ply,.npz" hidden>
+        <div class="drop-zone-content">
+            <p class="drop-icon">&#128193;</p>
+            <p class="drop-title">Drag & drop a .ply file here</p>
+            <p class="drop-subtitle">or click to browse</p>
+        </div>
     </div>
+    <button id="reset-btn" class="reset-btn" hidden>New File</button>
     <div id="no-webgpu" class="alert" style="display: none;">
         <h1>WebGPU not supported</h1>
         <p>Your browser does not support WebGPU.<br><a
@@ -147,105 +226,135 @@
                 browser that supports WebGPU.</a></p>
     </div>
     <div id="loading-error" class="alert" style="display: none;">
-        <h1>An error occured</h1>
-        <p></p>
+        <h1>Failed to load file</h1>
+        <p id="error-message"></p>
+        <button id="retry-btn" class="reset-btn" style="position: static; margin-top: 20px;">Try Another File</button>
     </div>
 </head>
 
 <body>
     <script type="module">
-
         async function checkWebGPU() {
             if (!navigator.gpu) {
                 return false;
             }
             try {
-                let adapter = await navigator.gpu.requestAdapter()
+                let adapter = await navigator.gpu.requestAdapter();
                 let device = await adapter.requestDevice();
-                return true
+                return true;
             } catch (e) {
                 return false;
             }
         }
 
         if (!await checkWebGPU()) {
+            document.getElementById("drop-zone").classList.add("hidden");
             document.getElementById("no-webgpu").style.display = "flex";
             throw Error("WebGPU not supported.");
         }
 
         import init, { run_wasm } from "./web_splats.js";
-        let init_promise = init();
+        const initPromise = init();
 
-        let params = new URLSearchParams(window.location.search);
-        let scene_file = params.get("scene");
-        let pc_file = params.get("file");
+        const dropZone = document.getElementById("drop-zone");
+        const fileInput = document.getElementById("file-input");
+        const resetBtn = document.getElementById("reset-btn");
+        const spinner = document.getElementById("spinner");
+        const loadingDisplay = document.getElementById("loading-display");
 
+        // Click to open file picker
+        dropZone.addEventListener("click", () => fileInput.click());
 
-        function withProgress(response) {
-            if (!response.ok) {
-                throw new Error("Cannot download file", { cause: response });
+        // Drag and drop handlers
+        dropZone.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            dropZone.classList.add("dragover");
+        });
+
+        dropZone.addEventListener("dragleave", () => {
+            dropZone.classList.remove("dragover");
+        });
+
+        dropZone.addEventListener("drop", (e) => {
+            e.preventDefault();
+            dropZone.classList.remove("dragover");
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                loadFile(files[0]);
             }
-            const contentLength = response.headers.get('content-length') || 0;
-            const total = parseInt(contentLength, 10);
-            let loaded = 0;
-            return new Response(
-                new ReadableStream({
-                    start(controller) {
-                        const reader = response.body.getReader();
+        });
 
-                        read();
-                        function read() {
-                            reader.read().then(({ done, value }) => {
-                                if (done) {
-                                    controller.close();
-                                    return;
-                                }
-                                loaded += value.byteLength;
-                                document.querySelector('.meter-1').style.strokeDashoffset = 360 - Math.round(loaded / total * 360);
-                                document.querySelector('#loading-display').innerHTML = Math.round(loaded / (1024 * 1024) * 10) / 10 + " MB"
-                                controller.enqueue(value);
-                                read();
-                            }).catch(error => {
-                                console.error(error);
-                                controller.error(error)
-                            })
-                        }
-                    }
-                })
-            );
-        }
-        if (!pc_file) {
-            document.getElementById("no-file").style.display = "flex";
-        } else {
+        // File input change handler
+        fileInput.addEventListener("change", (e) => {
+            if (e.target.files.length > 0) {
+                loadFile(e.target.files[0]);
+            }
+        });
+
+        // Reset button
+        resetBtn.addEventListener("click", () => {
+            window.location.reload();
+        });
+
+        async function loadFile(file) {
+            dropZone.classList.add("hidden");
+            spinner.style.display = "flex";
+            loadingDisplay.textContent = "Loading...";
+
             try {
-                document.getElementById("spinner").style.display = "flex";
-                let pc_promise = fetch(pc_file).then(withProgress).then(response => response.arrayBuffer()).then(data => new Uint8Array(data));
-                var scene_promise = Promise.resolve(null);
-                if (scene_file) {
-                    scene_promise = fetch(scene_file, {
-                        headers: {
-                            'Accept': 'application/json',
-                        }
-                    }).then(r => r.arrayBuffer()).then(data => new Uint8Array(data))
-                }
+                const arrayBuffer = await file.arrayBuffer();
+                const fileSize = arrayBuffer.byteLength;
+                loadingDisplay.textContent = (fileSize / (1024 * 1024)).toFixed(1) + " MB";
 
-                let [pc_data, scene_data] = await Promise.all([pc_promise, scene_promise]);
-                await init_promise;
-                run_wasm(pc_data, scene_data, pc_file, scene_file);
+                const data = new Uint8Array(arrayBuffer);
+
+                await initPromise;
+                run_wasm(data, null, file.name, null);
+
+                spinner.style.display = "none";
+                resetBtn.hidden = false;
             } catch (e) {
-                document.getElementById("spinner").style.display = "none";
-                let errorPane = document.getElementById("loading-error");
-                errorPane.style.display = "flex";
-                errorPane.getElementsByTagName("p")[0].innerHTML = e.message + ("cause" in e ? ": " + e.cause.statusText : "") + "<pre>" + pc_file + "</pre>";
-                console.error(e.cause.statusText);
+                spinner.style.display = "none";
+                showError(file.name, e);
             }
-            window.addEventListener('resize', function (event) {
-                document.getElementById("window-canvas").width = window.innerWidth;
-                document.getElementById("window-canvas").height = window.innerHeight;
-            }, true);
-
-            document.addEventListener('contextmenu', event => event.preventDefault());
         }
+
+        function showError(fileName, error) {
+            const errorPane = document.getElementById("loading-error");
+            const errorMessage = document.getElementById("error-message");
+
+            // Extract meaningful message from WASM panics
+            let message = error.message || String(error);
+            if (message.includes("unreachable")) {
+                message = "Unsupported file format. This viewer expects PLY files from 3D Gaussian Splatting (e.g., from the original 3DGS implementation).";
+            } else if (message.includes("failed to fill whole buffer")) {
+                message = "Invalid or corrupted file. The file structure doesn't match the expected 3DGS PLY format.";
+            }
+
+            errorMessage.innerHTML = `
+                <span style="opacity: 0.7;">${fileName}</span><br><br>
+                ${message}
+            `;
+            errorPane.style.display = "flex";
+
+            document.getElementById("retry-btn").addEventListener("click", () => {
+                window.location.reload();
+            });
+
+            console.error("Load error:", error);
+        }
+
+        // Canvas resize handler
+        window.addEventListener("resize", () => {
+            const canvas = document.getElementById("window-canvas");
+            if (canvas) {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            }
+        }, true);
+
+        // Disable context menu
+        document.addEventListener("contextmenu", (e) => e.preventDefault());
     </script>
 </body>
 

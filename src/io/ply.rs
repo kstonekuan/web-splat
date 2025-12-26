@@ -22,6 +22,7 @@ pub struct PlyReader<R: Read + Seek> {
     mip_splatting: Option<bool>,
     kernel_size: Option<f32>,
     background_color: Option<[f32; 3]>,
+    has_normals: bool,
 }
 
 impl<R: io::Read + io::Seek> PlyReader<R> {
@@ -36,6 +37,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let background_color = Self::background_color(&header)
             .map_err(|e| log::warn!("could not parse background_color: {}", e))
             .unwrap_or_default();
+        let has_normals = Self::has_normals(&header);
         Ok(Self {
             header,
             reader,
@@ -44,21 +46,27 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             mip_splatting,
             kernel_size,
             background_color,
+            has_normals,
         })
+    }
+
+    fn has_normals(header: &ply::Header) -> bool {
+        header.elements["vertex"].properties.contains_key("nx")
     }
 
     fn read_line<B: ByteOrder>(
         &mut self,
         sh_deg: usize,
+        has_normals: bool,
     ) -> anyhow::Result<(Gaussian, [[f16; 3]; 16])> {
         let mut pos = [0.; 3];
         self.reader.read_f32_into::<B>(&mut pos)?;
 
-        // skip normals
-        // for what ever reason it is faster to call read than seek ...
-        // so we just read them and never use them again
-        let mut _normals = [0.; 3];
-        self.reader.read_f32_into::<B>(&mut _normals)?;
+        // skip normals if present
+        if has_normals {
+            let mut _normals = [0.; 3];
+            self.reader.read_f32_into::<B>(&mut _normals)?;
+        }
 
         let mut sh: [[f32; 3]; 16] = [[0.; 3]; 16];
         self.reader.read_f32_into::<B>(&mut sh[0])?;
@@ -165,18 +173,19 @@ impl<R: io::Read + io::Seek> PointCloudReader for PlyReader<R> {
     fn read(&mut self) -> Result<GenericGaussianPointCloud, anyhow::Error> {
         let mut gaussians = Vec::with_capacity(self.num_points);
         let mut sh_coefs = Vec::with_capacity(self.num_points);
+        let has_normals = self.has_normals;
         match self.header.encoding {
             ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
             ply_rs::ply::Encoding::BinaryBigEndian => {
                 for _ in 0..self.num_points {
-                    let (g, s) = self.read_line::<BigEndian>(self.sh_deg as usize)?;
+                    let (g, s) = self.read_line::<BigEndian>(self.sh_deg as usize, has_normals)?;
                     gaussians.push(g);
                     sh_coefs.push(s);
                 }
             }
             ply_rs::ply::Encoding::BinaryLittleEndian => {
                 for _ in 0..self.num_points {
-                    let (g, s) = self.read_line::<LittleEndian>(self.sh_deg as usize)?;
+                    let (g, s) = self.read_line::<LittleEndian>(self.sh_deg as usize, has_normals)?;
                     gaussians.push(g);
                     sh_coefs.push(s);
                 }
