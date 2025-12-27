@@ -113,22 +113,35 @@ fn reduce_pass(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>) {
     workgroupBarrier();
 
     // Accumulate per-workgroup histogram in shared memory
+    // Process one key at a time across all subgroups to avoid race conditions
+    // within a subgroup (threads with same digit would race on histogram_load/store)
     for (var i = 0u; i < subgroup_count; i++) {
-        if subgroup_id == i {
-            for (var j = 0u; j < rs_scatter_block_rows; j++) {
-                let v = bitcast<u32>(kv[j]);
-                let digit = extractBits(v, pass_ * rs_radix_log2, rs_radix_log2);
-                let prev = histogram_load(digit);
-                let rank = kr[j] & 0xFFFFu;
-                let count = kr[j] >> 16u;
-                kr[j] = prev + rank;
+        for (var j = 0u; j < rs_scatter_block_rows; j++) {
+            // Variables must be declared outside the if block for the barrier
+            var my_digit = 0u;
+            var my_prev = 0u;
+            var my_rank = 0u;
+            var my_count = 0u;
 
-                if rank == count {
-                    histogram_store(digit, (prev + count));
-                }
+            if subgroup_id == i {
+                let v = bitcast<u32>(kv[j]);
+                my_digit = extractBits(v, pass_ * rs_radix_log2, rs_radix_log2);
+                my_prev = histogram_load(my_digit);
+                my_rank = kr[j] & 0xFFFFu;
+                my_count = kr[j] >> 16u;
+                kr[j] = my_prev + my_rank;
             }
+
+            // Barrier ensures all threads read before any thread writes
+            // This is outside the if block so all threads in the workgroup reach it
+            workgroupBarrier();
+
+            if subgroup_id == i && my_rank == my_count {
+                histogram_store(my_digit, my_prev + my_count);
+            }
+
+            workgroupBarrier();
         }
-        workgroupBarrier();
     }
 
     // Store the per-workgroup reduction to the partitions buffer
