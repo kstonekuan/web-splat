@@ -4,9 +4,224 @@ use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use web_time::Duration;
 
-use cgmath::{EuclideanSpace, InnerSpace, Point3, Quaternion, Rad, VectorSpace};
+use cgmath::{EuclideanSpace, InnerSpace, Matrix3, Point3, Quaternion, Rad, Vector3, VectorSpace};
+use std::f32::consts::PI;
 
 use crate::{camera::PerspectiveCamera, PerspectiveProjection};
+
+/// Types of camera trajectory animations (matching ML#)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrajectoryType {
+    /// Spiral/dolly motion: circular orbit + forward motion (default)
+    RotateForward,
+    /// Left-to-right horizontal pan
+    Swipe,
+    /// Horizontal shake then vertical shake (sinusoidal)
+    Shake,
+    /// Circular orbit around scene
+    Rotate,
+    /// Pure dolly forward/backward motion
+    Forward,
+}
+
+impl TrajectoryType {
+    /// Parse a trajectory type from a string
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "rotate_forward" | "rotateforward" => Some(Self::RotateForward),
+            "swipe" => Some(Self::Swipe),
+            "shake" => Some(Self::Shake),
+            "rotate" => Some(Self::Rotate),
+            "forward" => Some(Self::Forward),
+            _ => None,
+        }
+    }
+}
+
+/// Parameters for trajectory animation (matching ML#)
+#[derive(Clone, Debug)]
+pub struct TrajectoryParams {
+    /// Type of trajectory
+    pub trajectory_type: TrajectoryType,
+    /// Maximum lateral camera offset as fraction of depth (default: 0.08)
+    pub max_disparity: f32,
+    /// Maximum zoom/forward motion as fraction of depth (default: 0.15)
+    pub max_zoom: f32,
+    /// Number of animation steps (default: 60)
+    pub num_steps: u32,
+    /// Number of times to repeat the pattern (default: 1)
+    pub num_repeats: u32,
+    /// Duration per cycle in seconds (default: 2.0)
+    pub duration_per_cycle_seconds: f32,
+}
+
+impl Default for TrajectoryParams {
+    fn default() -> Self {
+        Self {
+            trajectory_type: TrajectoryType::RotateForward,
+            max_disparity: 0.08,
+            max_zoom: 0.15,
+            num_steps: 60,
+            num_repeats: 1,
+            duration_per_cycle_seconds: 2.0,
+        }
+    }
+}
+
+/// Camera trajectory animation that samples camera positions along a trajectory
+pub struct TrajectoryAnimation {
+    params: TrajectoryParams,
+    base_camera: PerspectiveCamera,
+    /// Maximum offset in camera-local space [lateral_x, lateral_y, medial_z]
+    max_offset: Vector3<f32>,
+    /// Point to look at (scene center)
+    look_at_point: Point3<f32>,
+    /// Camera's local coordinate frame (columns are right, up, forward vectors)
+    camera_frame: Matrix3<f32>,
+}
+
+impl TrajectoryAnimation {
+    /// Create a new trajectory animation
+    ///
+    /// # Arguments
+    /// * `params` - Trajectory parameters
+    /// * `base_camera` - Starting camera position/orientation
+    /// * `scene_center` - Center of the scene to look at
+    /// * `min_depth` - Minimum depth from camera to scene (for offset scaling)
+    /// * `viewport_diagonal` - Diagonal of viewport in normalized device coordinates
+    pub fn new(
+        params: TrajectoryParams,
+        base_camera: PerspectiveCamera,
+        scene_center: Point3<f32>,
+        min_depth: f32,
+        viewport_diagonal: f32,
+    ) -> Self {
+        // Compute max offsets like ML#:
+        // max_lateral = max_disparity * diagonal * min_depth
+        // max_medial = max_zoom * min_depth
+        let max_lateral = params.max_disparity * viewport_diagonal * min_depth;
+        let max_medial = params.max_zoom * min_depth;
+        let max_offset = Vector3::new(max_lateral, max_lateral, max_medial);
+
+        // Get camera's local coordinate frame from rotation
+        // The rotation transforms from camera space to world space
+        let camera_frame: Matrix3<f32> = base_camera.rotation.into();
+
+        Self {
+            params,
+            base_camera,
+            max_offset,
+            look_at_point: scene_center,
+            camera_frame,
+        }
+    }
+
+    /// Compute the eye offset in camera-local space for a given normalized time
+    fn compute_eye_offset(&self, t: f32) -> Vector3<f32> {
+        match self.params.trajectory_type {
+            TrajectoryType::Swipe => self.compute_swipe_offset(t),
+            TrajectoryType::Shake => self.compute_shake_offset(t),
+            TrajectoryType::Rotate => self.compute_rotate_offset(t),
+            TrajectoryType::RotateForward => self.compute_rotate_forward_offset(t),
+            TrajectoryType::Forward => self.compute_forward_offset(t),
+        }
+    }
+
+    /// Swipe: Linear left-to-right horizontal pan
+    fn compute_swipe_offset(&self, t: f32) -> Vector3<f32> {
+        // Linear motion along X-axis: [-max, +max]
+        let x = self.max_offset.x * (2.0 * t - 1.0);
+        Vector3::new(x, 0.0, 0.0)
+    }
+
+    /// Shake: Horizontal shake then vertical shake (sinusoidal)
+    fn compute_shake_offset(&self, t: f32) -> Vector3<f32> {
+        if t < 0.5 {
+            // First half: horizontal sine wave
+            let phase = t * 2.0;
+            let x = self.max_offset.x * (2.0 * PI * phase).sin();
+            Vector3::new(x, 0.0, 0.0)
+        } else {
+            // Second half: vertical sine wave
+            let phase = (t - 0.5) * 2.0;
+            let y = self.max_offset.y * (2.0 * PI * phase).sin();
+            Vector3::new(0.0, y, 0.0)
+        }
+    }
+
+    /// Rotate: Circular orbit around scene
+    fn compute_rotate_offset(&self, t: f32) -> Vector3<f32> {
+        let angle = 2.0 * PI * t;
+        Vector3::new(
+            self.max_offset.x * angle.sin(),
+            self.max_offset.y * angle.cos(),
+            0.0,
+        )
+    }
+
+    /// RotateForward: Spiral/dolly motion (circular + forward)
+    fn compute_rotate_forward_offset(&self, t: f32) -> Vector3<f32> {
+        let angle = 2.0 * PI * t;
+        Vector3::new(
+            self.max_offset.x * angle.sin(),
+            0.0,
+            self.max_offset.z * (1.0 - angle.cos()) / 2.0,
+        )
+    }
+
+    /// Forward: Pure dolly forward/backward motion
+    fn compute_forward_offset(&self, t: f32) -> Vector3<f32> {
+        Vector3::new(0.0, 0.0, self.max_offset.z * t)
+    }
+
+    /// Compute look-at rotation for a given position
+    fn compute_look_at_rotation(&self, position: Point3<f32>) -> Quaternion<f32> {
+        let forward = (self.look_at_point - position).normalize();
+        // Use the camera's original up vector
+        let original_up = self.camera_frame.y;
+
+        // Compute right vector
+        let right = forward.cross(original_up).normalize();
+        // Recompute up to ensure orthogonality
+        let up = right.cross(forward).normalize();
+
+        // Build rotation matrix (camera looks along -Z in camera space)
+        let rotation_matrix = Matrix3::from_cols(right, up, -forward);
+
+        // Convert to quaternion
+        Quaternion::from(rotation_matrix)
+    }
+}
+
+impl Sampler for TrajectoryAnimation {
+    type Sample = PerspectiveCamera;
+
+    fn sample(&self, t: f32) -> PerspectiveCamera {
+        // Handle multiple repeats: t goes from 0 to 1 for the full animation
+        // We want each repeat to go through the full cycle
+        let cycle_t = (t * self.params.num_repeats as f32).fract();
+        // Handle the edge case where t = 1.0 exactly
+        let cycle_t = if t >= 1.0 { 1.0 } else { cycle_t };
+
+        // Get offset in camera-local space
+        let local_offset = self.compute_eye_offset(cycle_t);
+
+        // Transform offset from camera-local to world space
+        let world_offset = self.camera_frame * local_offset;
+
+        // Compute new position
+        let new_position = self.base_camera.position + world_offset;
+
+        // Compute new rotation looking at scene center
+        let new_rotation = self.compute_look_at_rotation(new_position);
+
+        PerspectiveCamera {
+            position: new_position,
+            rotation: new_rotation,
+            projection: self.base_camera.projection,
+        }
+    }
+}
 
 pub trait Lerp {
     fn lerp(&self, other: &Self, amount: f32) -> Self;

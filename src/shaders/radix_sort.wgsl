@@ -226,12 +226,11 @@ fn histogram_load(digit: u32) -> u32 {
     return atomicLoad(&smem[digit]);
 }// scatter_smem[rs_radix_size + digit];}
 
-fn histogram_store(digit: u32, count: u32) { 
+fn histogram_store(digit: u32, count: u32) {
     // smem[digit] = count;
     atomicStore(&smem[digit], count);
 } // scatter_smem[rs_radix_size + digit] = count; }
-const rs_partition_mask_status : u32 = 0xC0000000u;
-const rs_partition_mask_count : u32 = 0x3FFFFFFFu;
+// Note: rs_partition_mask_* constants removed - no longer needed with reduce-then-scan approach
 var<private> kr : array<u32, rs_scatter_block_rows>;
 var<private> pv : array<u32, rs_scatter_block_rows>;
 
@@ -265,10 +264,8 @@ fn fill_kv_odd(wid: u32, lid: u32) {
         pv[i] = payload_b[pos];
     }
 }
-fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition_status_invalid: u32, partition_status_reduction: u32, partition_status_prefix: u32) {
-    let partition_mask_invalid = partition_status_invalid << 30u;
-    let partition_mask_reduction = partition_status_reduction << 30u;
-    let partition_mask_prefix = partition_status_prefix << 30u;
+fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>) {
+    // Note: partition_status parameters removed - no longer needed with reduce-then-scan approach
     // kv_filling is done in the scatter_even and scatter_odd functions to account for front and backbuffer switch
     // in the reference there is a nulling of the smmem here, was moved to line 251 as smem is used in the code until then
 
@@ -327,66 +324,18 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     // kr filling is now done and contains the total offset for each value to be able to 
     // move the values into order without having any collisions
     
-    // we do not check for single work groups (is currently not assumed to occur very often)
-    let partition_offset = lid.x + partitions_base_offset();    // is correct, the partitions pointer does not change
+    // Reduce-then-scan approach: read pre-computed prefix from partitions buffer
+    // The reduce and scan phases have already computed the exclusive prefix for each workgroup
+    // This avoids the decoupled lookback which can deadlock on Apple GPUs
+    let partition_offset = lid.x + partitions_base_offset();
     let partition_base = wid.x * rs_radix_size;
-    if wid.x == 0u {
-        // special treating for the first workgroup as the data might be read back by later workgroups
-        // corresponds to rs_first_prefix_store
-        let hist_offset = pass_ * rs_radix_size + lid.x;
-        if lid.x < rs_radix_size {
-            // let exc = histograms[hist_offset];
-            let exc = atomicLoad(&histograms[hist_offset]);
-            let red = histogram_load(lid.x);// scatter_smem[rs_keyval_size + lid.x];
-            
-            scatter_smem[lid.x] = exc;
-            
-            let inc = exc + red;
 
-            atomicStore(&histograms[partition_offset], inc | partition_mask_prefix);
-        }
+    if lid.x < rs_radix_size {
+        // Read the pre-computed exclusive prefix for this workgroup and digit
+        // The scan phase has already stored: global_prefix + sum of reductions from previous workgroups
+        let exc = atomicLoad(&histograms[partition_offset + partition_base]);
+        scatter_smem[lid.x] = exc;
     }
-    else {
-        // standard case for the "inbetween" workgroups
-        
-        // rs_reduction_store, only for inbetween workgroups
-        if lid.x < rs_radix_size && wid.x < nwg.x - 1u {
-            let red = histogram_load(lid.x);
-            atomicStore(&histograms[partition_offset + partition_base], red | partition_mask_reduction);
-        }
-        
-        // rs_loopback_store
-        if lid.x < rs_radix_size {
-            var partition_base_prev = partition_base - rs_radix_size;
-            var exc                 = 0u;
-
-            // Note: Each workgroup invocation can proceed independently.
-            // Subgroups and workgroups do NOT have to coordinate.
-            while true {
-                //let prev = atomicLoad(&histograms[partition_offset]);// histograms[partition_offset + partition_base_prev];
-                let prev = atomicLoad(&histograms[partition_base_prev + partition_offset]);// histograms[partition_offset + partition_base_prev];
-                if (prev & rs_partition_mask_status) == partition_mask_invalid {
-                    continue;
-                }
-                exc += prev & rs_partition_mask_count;
-                if (prev & rs_partition_mask_status) != partition_mask_prefix {
-                    // continue accumulating reduction
-                    partition_base_prev -= rs_radix_size;
-                    continue;
-                }
-
-                // otherwise save the exclusive scan and atomically transform the
-                // reduction into an inclusive prefix status math: reduction + 1 = prefix
-                scatter_smem[lid.x] = exc;
-
-                if wid.x < nwg.x - 1u { // only store when inbetween, skip for last workgrup
-                    atomicAdd(&histograms[partition_offset + partition_base], exc | (1u << 30u));
-                }
-                break;
-            }
-        }
-    }
-    // speial case for last workgroup is also done in the "inbetween" case
     
     // compute exclusive prefix scan of histogram
     // corresponds to rs_prefix
@@ -471,11 +420,8 @@ fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation
     
     // load from keys, store to keys_b
     fill_kv_even(wid.x, lid.x);
-    
-    let partition_status_invalid = 0u;
-    let partition_status_reduction = 1u;
-    let partition_status_prefix = 2u;
-    scatter(cur_pass, lid, gid, wid, nwg, partition_status_invalid, partition_status_reduction, partition_status_prefix);
+
+    scatter(cur_pass, lid, gid, wid, nwg);
 
     // store keyvals to their new locations, corresponds to rs_store
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
@@ -495,10 +441,7 @@ fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
     // load from keys_b, store to keys
     fill_kv_odd(wid.x, lid.x);
 
-    let partition_status_invalid = 2u;
-    let partition_status_reduction = 3u;
-    let partition_status_prefix = 0u;
-    scatter(cur_pass, lid, gid, wid, nwg, partition_status_invalid, partition_status_reduction, partition_status_prefix);
+    scatter(cur_pass, lid, gid, wid, nwg);
 
     // store keyvals to their new locations, corresponds to rs_store
     for (var i = 0u; i < rs_scatter_block_rows; i++) {

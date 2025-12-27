@@ -25,6 +25,22 @@
             -moz-user-select: none;
             -ms-user-select: none;
             user-select: none;
+            /* Flexbox layout for centered container */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            padding-top: 20px;
+            box-sizing: border-box;
+        }
+
+        #viewer-container {
+            width: 80%;
+            max-width: 1400px;
+            height: calc(100vh - 120px);
+            position: relative;
+            background-color: black;
+            overflow: hidden;
         }
 
         #spinner {
@@ -135,6 +151,7 @@
             transform: translate(-50%, -50%);
             width: 400px;
             height: 250px;
+            background: #1a1a1a;
             border: 2px dashed rgba(255, 255, 255, 0.4);
             border-radius: 16px;
             display: flex;
@@ -147,13 +164,40 @@
 
         .drop-zone:hover {
             border-color: rgba(255, 255, 255, 0.7);
-            background: rgba(255, 255, 255, 0.05);
+            background: #242424;
         }
 
         .drop-zone.dragover {
             border-color: #fff;
-            background: rgba(255, 255, 255, 0.1);
+            background: #2a2a2a;
             border-style: solid;
+        }
+
+        .drop-zone-close {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            width: 28px;
+            height: 28px;
+            border: none;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 18px;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .drop-zone-close:hover {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+
+        .drop-zone.closeable .drop-zone-close {
+            display: flex;
         }
 
         .drop-zone.hidden {
@@ -182,10 +226,31 @@
             color: rgba(255, 255, 255, 0.5);
         }
 
+        .compress-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 16px;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.8);
+            pointer-events: auto;
+        }
+
+        .compress-option:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .compress-option input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
         .reset-btn {
-            position: fixed;
-            top: 20px;
-            right: 20px;
             padding: 10px 20px;
             background: rgba(255, 255, 255, 0.1);
             border: 1px solid rgba(255, 255, 255, 0.3);
@@ -194,7 +259,6 @@
             font-size: 14px;
             cursor: pointer;
             transition: all 0.2s ease;
-            z-index: 1000;
         }
 
         .reset-btn:hover {
@@ -203,13 +267,45 @@
         }
 
         .controls {
-            position: fixed;
-            top: 20px;
-            right: 20px;
+            position: relative;
+            margin-top: 15px;
             display: flex;
             gap: 10px;
             align-items: center;
             z-index: 1000;
+        }
+
+        .trajectory-select {
+            padding: 10px 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='white' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10l-5 5z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+            padding-right: 35px;
+        }
+
+        .trajectory-select:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .trajectory-select option {
+            background: #1a1a1a;
+            color: white;
+        }
+
+        .controls-separator {
+            width: 1px;
+            height: 24px;
+            background: rgba(255, 255, 255, 0.2);
+            margin: 0 5px;
         }
 
         .footer-links {
@@ -231,44 +327,61 @@
             color: rgba(255, 255, 255, 0.7);
         }
     </style>
-    <div id="spinner" style="display: none;">
-        <svg>
-            <circle class="bg" cx="57" cy="57" r="52" />
-            <circle class="meter-1" cx="57" cy="57" r="52" />
-            <text id="loading-display" fill="white" x="50%" y="50%" text-anchor="middle"
-                alignment-baseline="middle">10%</text>
-        </svg>
-    </div>
-    <div id="drop-zone" class="drop-zone">
-        <input type="file" id="file-input" accept=".ply,.npz" hidden>
-        <div class="drop-zone-content">
-            <p class="drop-icon">&#128193;</p>
-            <p class="drop-title">Drag & drop a .ply file here</p>
-            <p class="drop-subtitle">or click to browse</p>
+</head>
+
+<body>
+    <div id="viewer-container">
+        <div id="spinner" style="display: none;">
+            <svg>
+                <circle class="bg" cx="57" cy="57" r="52" />
+                <circle class="meter-1" cx="57" cy="57" r="52" />
+                <text id="loading-display" fill="white" x="50%" y="50%" text-anchor="middle"
+                    alignment-baseline="middle">10%</text>
+            </svg>
+        </div>
+        <div id="drop-zone" class="drop-zone">
+            <button id="drop-zone-close" class="drop-zone-close">&times;</button>
+            <input type="file" id="file-input" accept=".ply,.npz" hidden>
+            <div class="drop-zone-content">
+                <p class="drop-icon">&#128193;</p>
+                <p class="drop-title">Drag & drop a .ply file here</p>
+                <p class="drop-subtitle">or click to browse</p>
+                <label class="compress-option" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="compress-checkbox" checked>
+                    <span>Compress for faster rendering</span>
+                </label>
+            </div>
+        </div>
+        <div id="no-webgpu" class="alert" style="display: none;">
+            <h1>WebGPU not supported</h1>
+            <p>Your browser does not support WebGPU.<br><a
+                    href="https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API#browser_compatibility">Please use a
+                    browser that supports WebGPU.</a></p>
+        </div>
+        <div id="loading-error" class="alert" style="display: none;">
+            <h1>Failed to load file</h1>
+            <p id="error-message"></p>
+            <button id="retry-btn" class="reset-btn" style="margin-top: 20px;">Try Another File</button>
         </div>
     </div>
     <div id="controls" class="controls" hidden>
-        <button id="reset-view-btn" class="reset-btn" style="position: static;">Reset View</button>
-        <button id="reset-btn" class="reset-btn" style="position: static;">New File</button>
+        <select id="trajectory-select" class="trajectory-select">
+            <option value="rotate_forward">Rotate Forward</option>
+            <option value="swipe">Swipe</option>
+            <option value="shake">Shake</option>
+            <option value="rotate">Rotate</option>
+            <option value="forward">Forward</option>
+        </select>
+        <button id="play-btn" class="reset-btn">Play</button>
+        <button id="reset-play-btn" class="reset-btn">Reset & Play</button>
+        <div class="controls-separator"></div>
+        <button id="reset-view-btn" class="reset-btn">Reset View</button>
+        <button id="reset-btn" class="reset-btn">New File</button>
     </div>
     <div class="footer-links">
         <a href="https://github.com/kstonekuan/web-splat" target="_blank">GitHub</a>
         <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank">Apache 2.0</a>
     </div>
-    <div id="no-webgpu" class="alert" style="display: none;">
-        <h1>WebGPU not supported</h1>
-        <p>Your browser does not support WebGPU.<br><a
-                href="https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API#browser_compatibility">Please use a
-                browser that supports WebGPU.</a></p>
-    </div>
-    <div id="loading-error" class="alert" style="display: none;">
-        <h1>Failed to load file</h1>
-        <p id="error-message"></p>
-        <button id="retry-btn" class="reset-btn" style="position: static; margin-top: 20px;">Try Another File</button>
-    </div>
-</head>
-
-<body>
     <script type="module">
         async function checkWebGPU() {
             if (!navigator.gpu) {
@@ -289,8 +402,86 @@
             throw Error("WebGPU not supported.");
         }
 
-        import init, { run_wasm } from "./web_splats.js";
+        import init, { run_wasm, load_new_file, has_target_canvas_size, get_target_canvas_size, start_trajectory, reset_view_and_play } from "./web_splats.js";
         const initPromise = init();
+
+        // Resize canvas to match target aspect ratio from embedded camera
+        function resizeCanvasToTargetAspect() {
+            if (!has_target_canvas_size()) {
+                return;
+            }
+            const targetSize = get_target_canvas_size();
+            if (targetSize.length !== 2) {
+                return;
+            }
+            const [targetWidth, targetHeight] = targetSize;
+            const targetAspect = targetWidth / targetHeight;
+
+            const container = document.getElementById("viewer-container");
+            const maxWidth = window.innerWidth * 0.8;  // 80% of window width
+            const maxHeight = window.innerHeight - 120;  // Leave space for controls
+
+            let newWidth, newHeight;
+
+            // Calculate dimensions that fit within constraints while maintaining aspect ratio
+            if (maxWidth / maxHeight > targetAspect) {
+                // Height is the limiting factor
+                newHeight = maxHeight;
+                newWidth = newHeight * targetAspect;
+            } else {
+                // Width is the limiting factor
+                newWidth = maxWidth;
+                newHeight = newWidth / targetAspect;
+            }
+
+            // Apply new dimensions to container
+            container.style.width = `${Math.round(newWidth)}px`;
+            container.style.height = `${Math.round(newHeight)}px`;
+
+            // Update canvas if it exists
+            const canvas = document.getElementById("window-canvas");
+            if (canvas) {
+                canvas.width = Math.round(newWidth);
+                canvas.height = Math.round(newHeight);
+            }
+
+            console.log(`Resized canvas to ${Math.round(newWidth)}x${Math.round(newHeight)} (target aspect: ${targetAspect.toFixed(3)})`);
+        }
+
+        // Track if WASM viewer is initialized
+        let wasmInitialized = false;
+
+        // Memory monitoring (experimental API, may not be available in all browsers)
+        async function checkMemoryUsage() {
+            // Try performance.measureUserAgentSpecificMemory (Chrome 89+)
+            if (performance.measureUserAgentSpecificMemory) {
+                try {
+                    const result = await performance.measureUserAgentSpecificMemory();
+                    const usedMB = result.bytes / (1024 * 1024);
+                    console.log(`Memory usage: ${usedMB.toFixed(0)} MB`);
+
+                    // Warn if memory is high (over 2GB)
+                    if (usedMB > 2000) {
+                        console.warn(`High memory usage detected: ${usedMB.toFixed(0)} MB`);
+                        return false;
+                    }
+                    return true;
+                } catch (e) {
+                    console.log("Memory measurement not available:", e.message);
+                }
+            }
+
+            // Fallback: check navigator.deviceMemory (total available)
+            if (navigator.deviceMemory) {
+                const deviceMemGB = navigator.deviceMemory;
+                console.log(`Device memory: ${deviceMemGB} GB`);
+                if (deviceMemGB < 4) {
+                    console.warn("Low device memory detected, recommend using compression");
+                }
+            }
+
+            return true; // Allow load if we can't measure
+        }
 
         const dropZone = document.getElementById("drop-zone");
         const fileInput = document.getElementById("file-input");
@@ -337,12 +528,55 @@
             }
         });
 
-        // New file button
+        // Play trajectory button
+        document.getElementById("play-btn").addEventListener("click", () => {
+            const trajectoryType = document.getElementById("trajectory-select").value;
+            start_trajectory(trajectoryType);
+        });
+
+        // Reset & Play button
+        document.getElementById("reset-play-btn").addEventListener("click", () => {
+            const trajectoryType = document.getElementById("trajectory-select").value;
+            reset_view_and_play(trajectoryType);
+        });
+
+        // New file button - show drop zone instead of reloading
         resetBtn.addEventListener("click", () => {
-            window.location.reload();
+            if (wasmInitialized) {
+                // Show drop zone for in-place reload
+                dropZone.classList.remove("hidden");
+                dropZone.classList.add("closeable");
+                controls.hidden = true;
+            } else {
+                window.location.reload();
+            }
+        });
+
+        // Close button for drop zone
+        document.getElementById("drop-zone-close").addEventListener("click", (e) => {
+            e.stopPropagation();
+            dropZone.classList.add("hidden");
+            dropZone.classList.remove("closeable");
+            controls.hidden = false;
         });
 
         async function loadFile(file) {
+            // File size warning for large files
+            const sizeMB = file.size / (1024 * 1024);
+            if (sizeMB > 100) {
+                if (!confirm(`Large file detected (${sizeMB.toFixed(0)} MB).\n\nThis may cause performance issues or browser crashes on devices with limited memory.\n\nContinue?`)) {
+                    return;
+                }
+            }
+
+            // Check memory before loading (if API is available)
+            const memoryOk = await checkMemoryUsage();
+            if (!memoryOk) {
+                if (!confirm("Warning: Memory usage is high.\n\nLoading another file may cause the browser to crash.\n\nContinue anyway?")) {
+                    return;
+                }
+            }
+
             dropZone.classList.add("hidden");
             spinner.style.display = "flex";
             loadingDisplay.textContent = "Loading...";
@@ -353,9 +587,25 @@
                 loadingDisplay.textContent = (fileSize / (1024 * 1024)).toFixed(1) + " MB";
 
                 const data = new Uint8Array(arrayBuffer);
+                const compress = document.getElementById("compress-checkbox").checked;
 
                 await initPromise;
-                run_wasm(data, null, file.name, null);
+
+                if (wasmInitialized) {
+                    // In-place reload: use load_new_file() which drops old resources
+                    loadingDisplay.textContent = "Reloading...";
+                    load_new_file(data, file.name, compress);
+                    console.log("Loaded new file in-place:", file.name);
+                    // Resize canvas to match new file's aspect ratio
+                    setTimeout(resizeCanvasToTargetAspect, 100);
+                } else {
+                    // First load: initialize the viewer
+                    run_wasm(data, null, file.name, null, compress);
+                    wasmInitialized = true;
+                    console.log("Initialized viewer with:", file.name);
+                    // Resize canvas after initial load
+                    setTimeout(resizeCanvasToTargetAspect, 100);
+                }
 
                 spinner.style.display = "none";
                 controls.hidden = false;
@@ -375,6 +625,8 @@
                 message = "Unsupported file format. This viewer expects PLY files from 3D Gaussian Splatting (e.g., from the original 3DGS implementation).";
             } else if (message.includes("failed to fill whole buffer")) {
                 message = "Invalid or corrupted file. The file structure doesn't match the expected 3DGS PLY format.";
+            } else if (message.includes("OutOfMemory") || message.includes("out of memory")) {
+                message = "Out of memory. The file is too large for your device. Try enabling compression or using a smaller file.";
             }
 
             errorMessage.innerHTML = `
@@ -384,23 +636,33 @@
             errorPane.style.display = "flex";
 
             document.getElementById("retry-btn").addEventListener("click", () => {
-                window.location.reload();
-            });
+                if (wasmInitialized) {
+                    // Show drop zone for retry without full reload
+                    errorPane.style.display = "none";
+                    dropZone.classList.remove("hidden");
+                } else {
+                    window.location.reload();
+                }
+            }, { once: true });
 
             console.error("Load error:", error);
         }
 
-        // Canvas resize handler
+        // Canvas resize handler - maintain target aspect ratio if available
         window.addEventListener("resize", () => {
-            const canvas = document.getElementById("window-canvas");
-            if (canvas) {
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight;
+            // If we have a target canvas size, resize to maintain aspect ratio
+            if (has_target_canvas_size()) {
+                resizeCanvasToTargetAspect();
+            } else {
+                // Otherwise use container dimensions
+                const canvas = document.getElementById("window-canvas");
+                const container = document.getElementById("viewer-container");
+                if (canvas && container) {
+                    canvas.width = container.clientWidth;
+                    canvas.height = container.clientHeight;
+                }
             }
         }, true);
-
-        // Disable context menu
-        document.addEventListener("contextmenu", (e) => e.preventDefault());
     </script>
 </body>
 

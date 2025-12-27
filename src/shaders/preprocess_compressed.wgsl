@@ -144,19 +144,28 @@ fn dequantizef4(value: vec4<f32>, quantization: Quantization) -> vec4<f32> {
 
 
 /// reads the ith sh coef from the vertex buffer
+/// SH coefficients are stored as i8 values, packed 4 per u32
+/// unpack4x8snorm normalizes to [-1, 1] using max(c/127, -1)
+/// We multiply by 128 to approximately recover the original i8 value
+/// (using 128 instead of 127 reduces precision loss at -128)
 fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
-    let n = (MAX_SH_DEG + 1u) * (MAX_SH_DEG + 1u);
+    // Rust compression always stores 16 coefficients (48 bytes) per splat
+    // regardless of the actual SH degree being used for rendering
+    let n = 16u;
     let coef_idx = 3u * (splat_idx * n + c_idx);
-    // coefs are packed as  bytes (4x per u32)
+    // coefs are packed as bytes (4x per u32)
     let buff_idx = coef_idx / 4u;
     var v1 = unpack4x8snorm(sh_coefs[buff_idx]);
     var v2 = unpack4x8snorm(sh_coefs[buff_idx + 1u]);
+    // Multiply by 128 to recover approximate i8 values
+    // Using 128 instead of 127 gives: -1.0 * 128 = -128 (exact for min value)
+    // 1.0 * 128 = 128, but original max is 127, so small overshoot at max
     if c_idx == 0u {
-        v1 = dequantizef4(v1 * 127., quantization.color_dc);
-        v2 = dequantizef4(v2 * 127., quantization.color_dc);
+        v1 = dequantizef4(v1 * 128., quantization.color_dc);
+        v2 = dequantizef4(v2 * 128., quantization.color_dc);
     } else {
-        v1 = dequantizef4(v1 * 127., quantization.color_rest);
-        v2 = dequantizef4(v2 * 127., quantization.color_rest);
+        v1 = dequantizef4(v1 * 128., quantization.color_rest);
+        v2 = dequantizef4(v2 * 128., quantization.color_rest);
     }
     let r = coef_idx % 4u;
     if r == 0u {

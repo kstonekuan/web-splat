@@ -9,7 +9,6 @@ use std::mem;
 use wgpu::util::DeviceExt;
 
 use crate::io::GenericGaussianPointCloud;
-use crate::uniform::UniformBuffer;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -85,6 +84,12 @@ pub struct PointCloud {
     mip_splatting: Option<bool>,
     kernel_size: Option<f32>,
     background_color: Option<wgpu::Color>,
+
+    // Keep buffers alive for compressed mode (bind group holds reference but we store for clarity)
+    _vertex_buffer: wgpu::Buffer,
+    _sh_buffer: wgpu::Buffer,
+    _covars_buffer: Option<wgpu::Buffer>,
+    _quantization_buffer: Option<wgpu::Buffer>,
 }
 
 impl Debug for PointCloud {
@@ -128,51 +133,69 @@ impl PointCloud {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        let mut bind_group_entries = vec![
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: vertex_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: sh_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: splat_2d_buffer.as_entire_binding(),
-            },
-        ];
-
-        let bind_group = if pc.compressed() {
-            let covars_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        // Create compressed-mode buffers first (if needed) to ensure proper lifetime
+        let (covars_buffer, quantization_buffer) = if pc.compressed() {
+            let covars = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Covariances buffer"),
                 contents: bytemuck::cast_slice(pc.covars.as_ref().unwrap().as_slice()),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
-            let quantization_uniform = UniformBuffer::new(
-                device,
-                pc.quantization.unwrap(),
-                Some("quantization uniform buffer"),
-            );
-            bind_group_entries.push(wgpu::BindGroupEntry {
-                binding: 3,
-                resource: covars_buffer.as_entire_binding(),
+            let quantization = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("quantization uniform buffer"),
+                contents: bytemuck::cast_slice(&[pc.quantization.unwrap()]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
-            bind_group_entries.push(wgpu::BindGroupEntry {
-                binding: 4,
-                resource: quantization_uniform.buffer().as_entire_binding(),
-            });
+            (Some(covars), Some(quantization))
+        } else {
+            (None, None)
+        };
 
+        // Create bind group with appropriate layout based on compression
+        let bind_group = if pc.compressed() {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("point cloud bind group (compressed)"),
                 layout: &Self::bind_group_layout_compressed(device),
-                entries: &bind_group_entries,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: vertex_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: sh_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: splat_2d_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: covars_buffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: quantization_buffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                ],
             })
         } else {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("point cloud bind group"),
                 layout: &Self::bind_group_layout(device),
-                entries: &bind_group_entries,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: vertex_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: sh_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: splat_2d_buffer.as_entire_binding(),
+                    },
+                ],
             })
         };
 
@@ -195,6 +218,10 @@ impl PointCloud {
                 b: c[2] as f64,
                 a: 1.,
             }),
+            _vertex_buffer: vertex_buffer,
+            _sh_buffer: sh_buffer,
+            _covars_buffer: covars_buffer,
+            _quantization_buffer: quantization_buffer,
         })
     }
 
@@ -366,7 +393,6 @@ pub struct Quantization {
 }
 
 impl Quantization {
-    #[cfg(feature = "npz")]
     pub fn new(zero_point: i32, scale: f32) -> Self {
         Quantization {
             zero_point,

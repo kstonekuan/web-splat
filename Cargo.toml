@@ -10,6 +10,7 @@ description = "3D Gaussian Splatting Viewer"
 [dependencies]
 wgpu = { version = "27.0.1" }
 winit = "0.30.12"
+once_cell = "1.20"
 cgmath = { version = "0.18.0", features = [
     "bytemuck",
 ], git = 'https://github.com/rustgd/cgmath' }
@@ -19,7 +20,7 @@ bytemuck = { version = "1.24.0", features = ["derive"] }
 anyhow = "1.0.100"
 ply-rs = "0.1.3"
 byteorder = "1.5.0"
-serde_json = "1.0.147"
+serde_json = "1.0.148"
 serde = { version = "1.0.228", features = ["derive"] }
 num-traits = "0.2.19"
 half = { version = "2.7.1", features = ["bytemuck", "num-traits"] }
@@ -70,6 +71,7 @@ console_log = "1.0.0"
 log = "0.4.29"
 web-time = "1.1.0"
 web-sys = { version = "0.3.83" }
+js-sys = "0.3.83"
 
 [profile.web-release]
 inherits = "release"

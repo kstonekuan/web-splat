@@ -27,6 +27,11 @@ pub struct GPURSSorter {
     zero_p: wgpu::ComputePipeline,
     histogram_p: wgpu::ComputePipeline,
     prefix_p: wgpu::ComputePipeline,
+    // Reduce-then-scan pipelines (replace decoupled lookback)
+    reduce_even_p: wgpu::ComputePipeline,
+    reduce_odd_p: wgpu::ComputePipeline,
+    scan_even_p: wgpu::ComputePipeline,
+    scan_odd_p: wgpu::ComputePipeline,
     scatter_even_p: wgpu::ComputePipeline,
     scatter_odd_p: wgpu::ComputePipeline,
     subgroup_size: usize,
@@ -276,6 +281,83 @@ impl GPURSSorter {
             cache: None,
         });
 
+        // Load reduce shader for reduce-then-scan approach
+        let raw_reduce_shader: &str = include_str!("shaders/radix_sort_reduce.wgsl");
+        let reduce_shader_w_const = format!(
+            "const histogram_sg_size: u32 = {:}u;\n\
+            const histogram_wg_size: u32 = {:}u;\n\
+            const rs_radix_log2: u32 = {:}u;\n\
+            const rs_radix_size: u32 = {:}u;\n\
+            const rs_keyval_size: u32 = {:}u;\n\
+            const rs_histogram_block_rows: u32 = {:}u;\n\
+            const rs_scatter_block_rows: u32 = {:}u;\n{:}",
+            histogram_sg_size,
+            HISTOGRAM_WG_SIZE,
+            RS_RADIX_LOG2,
+            RS_RADIX_SIZE,
+            RS_KEYVAL_SIZE,
+            RS_HISTOGRAM_BLOCK_ROWS,
+            RS_SCATTER_BLOCK_ROWS,
+            raw_reduce_shader
+        );
+        let reduce_shader_code = reduce_shader_w_const
+            .replace("{scatter_wg_size}", SCATTER_WG_SIZE.to_string().as_str());
+
+        let reduce_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Radix sort reduce shader"),
+            source: wgpu::ShaderSource::Wgsl(reduce_shader_code.into()),
+        });
+        let reduce_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("reduce_even"),
+            layout: Some(&pipeline_layout),
+            module: &reduce_shader,
+            entry_point: Some("reduce_even"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let reduce_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("reduce_odd"),
+            layout: Some(&pipeline_layout),
+            module: &reduce_shader,
+            entry_point: Some("reduce_odd"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // Load scan shader for reduce-then-scan approach
+        let raw_scan_shader: &str = include_str!("shaders/radix_sort_scan.wgsl");
+        let scan_shader_w_const = format!(
+            "const rs_radix_log2: u32 = {:}u;\n\
+            const rs_radix_size: u32 = {:}u;\n\
+            const rs_keyval_size: u32 = {:}u;\n\
+            const rs_scatter_block_rows: u32 = {:}u;\n{:}",
+            RS_RADIX_LOG2, RS_RADIX_SIZE, RS_KEYVAL_SIZE, RS_SCATTER_BLOCK_ROWS, raw_scan_shader
+        );
+        let scan_shader_code = scan_shader_w_const
+            .replace("{prefix_wg_size}", PREFIX_WG_SIZE.to_string().as_str())
+            .replace("{scatter_wg_size}", SCATTER_WG_SIZE.to_string().as_str());
+
+        let scan_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Radix sort scan shader"),
+            source: wgpu::ShaderSource::Wgsl(scan_shader_code.into()),
+        });
+        let scan_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("scan_partitions_even"),
+            layout: Some(&pipeline_layout),
+            module: &scan_shader,
+            entry_point: Some("scan_partitions_even"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let scan_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("scan_partitions_odd"),
+            layout: Some(&pipeline_layout),
+            module: &scan_shader,
+            entry_point: Some("scan_partitions_odd"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
         Self {
             bind_group_layout,
             render_bind_group_layout,
@@ -283,6 +365,10 @@ impl GPURSSorter {
             zero_p,
             histogram_p,
             prefix_p,
+            reduce_even_p,
+            reduce_odd_p,
+            scan_even_p,
+            scan_odd_p,
             scatter_even_p,
             scatter_odd_p,
             subgroup_size: histogram_sg_size,
@@ -816,23 +902,125 @@ impl GPURSSorter {
     ) {
         assert!(passes == 4); // currently the amount of passes is hardcoded in the shader
         let (_, scatter_blocks_ru, _, _, _, _) = Self::get_scatter_histogram_sizes(keysize);
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Scatter keyvals"),
-            timestamp_writes: None,
-        });
 
-        pass.set_bind_group(0, bind_group, &[]);
-        pass.set_pipeline(&self.scatter_even_p);
-        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        // Reduce-then-scan approach: for each pass we run reduce -> scan -> scatter
+        // This avoids the decoupled lookback which can deadlock on Apple GPUs
 
-        pass.set_pipeline(&self.scatter_odd_p);
-        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        // Pass 0 (even): reduce -> scan -> scatter
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Reduce even pass 0"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.reduce_even_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scan even pass 0"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scan_even_p);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scatter even pass 0"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scatter_even_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        }
 
-        pass.set_pipeline(&self.scatter_even_p);
-        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        // Pass 1 (odd): reduce -> scan -> scatter
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Reduce odd pass 1"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.reduce_odd_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scan odd pass 1"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scan_odd_p);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scatter odd pass 1"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scatter_odd_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        }
 
-        pass.set_pipeline(&self.scatter_odd_p);
-        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        // Pass 2 (even): reduce -> scan -> scatter
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Reduce even pass 2"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.reduce_even_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scan even pass 2"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scan_even_p);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scatter even pass 2"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scatter_even_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        }
+
+        // Pass 3 (odd): reduce -> scan -> scatter
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Reduce odd pass 3"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.reduce_odd_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scan odd pass 3"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scan_odd_p);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scatter odd pass 3"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scatter_odd_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        }
     }
     pub fn record_scatter_keys_indirect(
         &self,
@@ -843,23 +1031,124 @@ impl GPURSSorter {
     ) {
         assert!(passes == 4);
 
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Scatter keyvals"),
-            timestamp_writes: None,
-        });
+        // Reduce-then-scan approach: for each pass we run reduce -> scan -> scatter
+        // This avoids the decoupled lookback which can deadlock on Apple GPUs
 
-        pass.set_bind_group(0, bind_group, &[]);
-        pass.set_pipeline(&self.scatter_even_p);
-        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        // Pass 0 (even): reduce -> scan -> scatter
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Reduce even pass 0 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.reduce_even_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scan even pass 0 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scan_even_p);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scatter even pass 0 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scatter_even_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
 
-        pass.set_pipeline(&self.scatter_odd_p);
-        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        // Pass 1 (odd): reduce -> scan -> scatter
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Reduce odd pass 1 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.reduce_odd_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scan odd pass 1 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scan_odd_p);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scatter odd pass 1 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scatter_odd_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
 
-        pass.set_pipeline(&self.scatter_even_p);
-        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        // Pass 2 (even): reduce -> scan -> scatter
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Reduce even pass 2 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.reduce_even_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scan even pass 2 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scan_even_p);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scatter even pass 2 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scatter_even_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
 
-        pass.set_pipeline(&self.scatter_odd_p);
-        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        // Pass 3 (odd): reduce -> scan -> scatter
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Reduce odd pass 3 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.reduce_odd_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scan odd pass 3 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scan_odd_p);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Scatter odd pass 3 indirect"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_pipeline(&self.scatter_odd_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
     }
 
     pub fn record_sort(

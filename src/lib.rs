@@ -4,6 +4,14 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(target_arch = "wasm32")]
+use std::io::Cursor;
+
+#[cfg(target_arch = "wasm32")]
+use once_cell::sync::Lazy;
+#[cfg(target_arch = "wasm32")]
+use std::sync::Mutex;
+
 use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
@@ -11,7 +19,7 @@ use std::time::{Duration, Instant};
 use web_time::{Duration, Instant};
 use wgpu::Backends;
 
-use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3};
+use cgmath::{Deg, EuclideanSpace, InnerSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3};
 use egui::FullOutput;
 use num_traits::One;
 
@@ -21,6 +29,10 @@ use utils::RingBuffer;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
+extern crate js_sys;
 use winit::{
     dpi::{LogicalSize, PhysicalSize},
     event::{DeviceEvent, ElementState, Event, TouchPhase as WinitTouchPhase, WindowEvent},
@@ -31,7 +43,10 @@ use winit::{
 
 mod animation;
 mod ui;
-pub use animation::{Animation, Sampler, TrackingShot, Transition};
+pub use animation::{
+    Animation, Sampler, TrackingShot, TrajectoryAnimation, TrajectoryParams, TrajectoryType,
+    Transition,
+};
 mod camera;
 pub use camera::{Camera, PerspectiveCamera, PerspectiveProjection};
 mod controller;
@@ -59,10 +74,130 @@ pub struct RenderConfig {
     pub hdr: bool,
 }
 
+/// Pending file data for in-place reload (WASM only)
+#[cfg(target_arch = "wasm32")]
+struct PendingFile {
+    data: Vec<u8>,
+    filename: String,
+    compress: bool,
+}
+
+/// Global state for pending file to load (WASM only)
+/// This allows JavaScript to queue a file load that the event loop will pick up
+#[cfg(target_arch = "wasm32")]
+static PENDING_FILE: Lazy<Mutex<Option<PendingFile>>> = Lazy::new(|| Mutex::new(None));
+
+/// Global state for target canvas size from embedded camera (WASM only)
+/// This allows JavaScript to resize the canvas to match the original image dimensions
+#[cfg(target_arch = "wasm32")]
+static TARGET_CANVAS_SIZE: Lazy<Mutex<Option<(u32, u32)>>> = Lazy::new(|| Mutex::new(None));
+
+/// Global state for pending trajectory to start (WASM only)
+#[cfg(target_arch = "wasm32")]
+static PENDING_TRAJECTORY: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
+/// Global state for pending reset and replay (WASM only)
+#[cfg(target_arch = "wasm32")]
+static PENDING_RESET_AND_PLAY: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
+/// Device performance tier for determining resource limits
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceTier {
+    Low,    // <= 4GB RAM: 1M splats max
+    Medium, // <= 8GB RAM: 2M splats max
+    High,   // > 8GB RAM: 4M splats max
+}
+
+impl DeviceTier {
+    /// Maximum number of splats recommended for this device tier
+    pub fn max_splats(&self) -> u32 {
+        match self {
+            DeviceTier::Low => 1_000_000,
+            DeviceTier::Medium => 2_000_000,
+            DeviceTier::High => 4_000_000,
+        }
+    }
+}
+
+/// Device capabilities for determining resource limits
+#[derive(Debug, Clone)]
+pub struct DeviceCapabilities {
+    pub max_buffer_size: u64,
+    pub max_storage_buffer_binding_size: u32,
+    pub device_tier: DeviceTier,
+    pub max_splats: u32,
+    pub device_name: String,
+}
+
+impl DeviceCapabilities {
+    /// Bytes per splat including all buffers (Gaussian + 2D splat + sorting overhead)
+    const BYTES_PER_SPLAT: u64 = 100; // Conservative estimate
+
+    pub fn from_adapter(adapter: &wgpu::Adapter) -> Self {
+        let limits = adapter.limits();
+        let info = adapter.get_info();
+
+        // Detect device tier from system memory (WASM) or buffer limits (native)
+        let device_tier = Self::detect_device_tier(&info, &limits);
+
+        // Calculate max splats based on buffer limits and device tier
+        let buffer_based_max = (limits.max_buffer_size / Self::BYTES_PER_SPLAT) as u32;
+        let tier_based_max = device_tier.max_splats();
+
+        // Use the more conservative limit
+        let max_splats = buffer_based_max.min(tier_based_max);
+
+        Self {
+            max_buffer_size: limits.max_buffer_size,
+            max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
+            device_tier,
+            max_splats,
+            device_name: info.name.clone(),
+        }
+    }
+
+    fn detect_device_tier(_info: &wgpu::AdapterInfo, limits: &wgpu::Limits) -> DeviceTier {
+        // Try to get device memory from JavaScript on WASM
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(memory_gb) = Self::get_device_memory_wasm() {
+                return if memory_gb <= 4.0 {
+                    DeviceTier::Low
+                } else if memory_gb <= 8.0 {
+                    DeviceTier::Medium
+                } else {
+                    DeviceTier::High
+                };
+            }
+        }
+
+        // Fallback: estimate tier from buffer limits
+        // max_buffer_size is typically proportional to available GPU memory
+        let max_buffer_mb = limits.max_buffer_size / (1024 * 1024);
+        if max_buffer_mb <= 256 {
+            DeviceTier::Low
+        } else if max_buffer_mb <= 1024 {
+            DeviceTier::Medium
+        } else {
+            DeviceTier::High
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn get_device_memory_wasm() -> Option<f64> {
+        let window = web_sys::window()?;
+        let navigator = window.navigator();
+        // navigator.deviceMemory returns memory in GB (2, 4, 8, etc.)
+        let device_memory = js_sys::Reflect::get(&navigator, &"deviceMemory".into()).ok()?;
+        device_memory.as_f64()
+    }
+}
+
 pub struct WGPUContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter: wgpu::Adapter,
+    pub capabilities: DeviceCapabilities,
 }
 
 impl WGPUContext {
@@ -115,10 +250,19 @@ impl WGPUContext {
             .await
             .unwrap();
 
+        // Detect device capabilities for resource limiting
+        let capabilities = DeviceCapabilities::from_adapter(&adapter);
+        log::info!(
+            "Device capabilities: tier={:?}, max_splats={}",
+            capabilities.device_tier,
+            capabilities.max_splats
+        );
+
         Self {
             device,
             queue,
             adapter,
+            capabilities,
         }
     }
 }
@@ -154,6 +298,9 @@ pub struct WindowContext {
     cameras_save_path: String,
     stopwatch: Option<GPUStopwatch>,
     initial_camera: Option<PerspectiveCamera>,
+
+    /// If point cloud was downsampled, stores the original count
+    downsampled_from: Option<usize>,
 }
 
 impl WindowContext {
@@ -162,6 +309,7 @@ impl WindowContext {
         window: Window,
         pc_file: R,
         render_config: &RenderConfig,
+        compress: bool,
     ) -> anyhow::Result<Self> {
         let mut size = window.inner_size();
         if size == PhysicalSize::new(0, 0) {
@@ -209,14 +357,51 @@ impl WindowContext {
         };
         surface.configure(device, &config);
 
-        let pc_raw = io::GenericGaussianPointCloud::load(pc_file)?;
+        let mut pc_raw = io::GenericGaussianPointCloud::load(pc_file)?;
+
+        // Downsample if point cloud exceeds device capabilities
+        let max_splats = wgpu_context.capabilities.max_splats as usize;
+        let downsampled_from = pc_raw.downsample(max_splats);
+
+        // Compress if requested and not already compressed
+        if compress && !pc_raw.compressed() {
+            if let Err(e) = pc_raw.compress() {
+                log::warn!("Failed to compress point cloud: {:?}", e);
+            }
+        }
 
         // Extract embedded camera before creating PointCloud (which consumes pc_raw)
         let initial_camera: Option<PerspectiveCamera> =
             pc_raw.embedded_camera.clone().map(|c| c.into());
 
+        // Update target canvas size from embedded camera (WASM only)
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(ref embedded) = pc_raw.embedded_camera {
+                if let Ok(mut size) = TARGET_CANVAS_SIZE.lock() {
+                    *size = Some(embedded.image_size);
+                    log::info!(
+                        "Set target canvas size from embedded camera: {}x{}",
+                        embedded.image_size.0,
+                        embedded.image_size.1
+                    );
+                }
+            }
+        }
+
         let pc = PointCloud::new(device, pc_raw)?;
-        log::info!("loaded point cloud with {:} points", pc.num_points());
+        log::info!(
+            "loaded point cloud with {:} points (compressed: {})",
+            pc.num_points(),
+            pc.compressed()
+        );
+        if let Some(original) = downsampled_from {
+            log::warn!(
+                "Point cloud was downsampled from {} to {} points due to device limits",
+                original,
+                pc.num_points()
+            );
+        }
 
         let renderer =
             GaussianRenderer::new(device, queue, render_format, pc.sh_deg(), pc.compressed()).await;
@@ -300,6 +485,7 @@ impl WindowContext {
 
             stopwatch,
             initial_camera,
+            downsampled_from,
         })
     }
 
@@ -307,7 +493,12 @@ impl WindowContext {
         if let Some(file_path) = &self.pointcloud_file_path {
             log::info!("reloading volume from {:?}", file_path);
             let file = std::fs::File::open(file_path)?;
-            let pc_raw = io::GenericGaussianPointCloud::load(file)?;
+            let mut pc_raw = io::GenericGaussianPointCloud::load(file)?;
+
+            // Downsample if point cloud exceeds device capabilities
+            let max_splats = self.wgpu_context.capabilities.max_splats as usize;
+            self.downsampled_from = pc_raw.downsample(max_splats);
+
             self.pc = PointCloud::new(&self.wgpu_context.device, pc_raw)?;
         } else {
             return Err(anyhow::anyhow!("no pointcloud file path present"));
@@ -619,6 +810,52 @@ impl WindowContext {
         self.initial_camera.is_some()
     }
 
+    /// Start a trajectory animation
+    pub fn start_trajectory(&mut self, trajectory_type: TrajectoryType) {
+        let params = TrajectoryParams {
+            trajectory_type,
+            ..Default::default()
+        };
+
+        // Compute min_depth from AABB
+        let aabb = self.pc.bbox();
+        let camera_to_center = self.splatting_args.camera.position - aabb.center();
+        let min_depth = (camera_to_center.magnitude() - aabb.radius()).max(aabb.radius() / 10.0);
+
+        // Compute viewport diagonal in normalized device coordinates
+        let fovx = self.splatting_args.camera.projection.fovx.0;
+        let fovy = self.splatting_args.camera.projection.fovy.0;
+        let viewport_diagonal = ((fovx.tan()).powi(2) + (fovy.tan()).powi(2)).sqrt();
+
+        let trajectory = TrajectoryAnimation::new(
+            params.clone(),
+            self.splatting_args.camera,
+            aabb.center(),
+            min_depth,
+            viewport_diagonal,
+        );
+
+        let duration =
+            Duration::from_secs_f32(params.duration_per_cycle_seconds * params.num_repeats as f32);
+
+        let animation = Animation::new(duration, false, Box::new(trajectory));
+
+        self.animation = Some((animation, true));
+        log::info!("Started trajectory animation: {:?}", trajectory_type);
+    }
+
+    /// Reset to initial camera and optionally start a trajectory animation
+    pub fn reset_and_replay(&mut self, trajectory_type: Option<TrajectoryType>) {
+        if let Some(cam) = self.initial_camera {
+            self.splatting_args.camera = cam;
+            self.controller.reset_to_camera(cam);
+
+            if let Some(traj_type) = trajectory_type {
+                self.start_trajectory(traj_type);
+            }
+        }
+    }
+
     fn save_view(&mut self) {
         let max_scene_id = if let Some(scene) = &self.scene {
             scene.cameras(None).iter().map(|c| c.id).max().unwrap_or(0)
@@ -635,6 +872,135 @@ impl WindowContext {
             Split::Test,
         ));
     }
+
+    /// Load a new point cloud in-place, properly dropping the old one first
+    #[cfg(target_arch = "wasm32")]
+    fn load_new_pointcloud(&mut self, data: Vec<u8>, filename: String, compress: bool) {
+        log::info!(
+            "Loading new point cloud: {} ({} bytes, compress={})",
+            filename,
+            data.len(),
+            compress
+        );
+
+        let device = &self.wgpu_context.device;
+
+        // Parse the new point cloud
+        let pc_reader = Cursor::new(data);
+        let mut pc_raw = match io::GenericGaussianPointCloud::load(pc_reader) {
+            Ok(pc) => pc,
+            Err(e) => {
+                log::error!("Failed to load point cloud: {:?}", e);
+                return;
+            }
+        };
+
+        // Downsample if point cloud exceeds device capabilities
+        let max_splats = self.wgpu_context.capabilities.max_splats as usize;
+        let new_downsampled_from = pc_raw.downsample(max_splats);
+
+        // Compress if requested and not already compressed
+        if compress && !pc_raw.compressed() {
+            if let Err(e) = pc_raw.compress() {
+                log::warn!("Failed to compress point cloud: {:?}", e);
+            }
+        }
+
+        // Extract embedded camera before creating PointCloud
+        let new_initial_camera: Option<PerspectiveCamera> =
+            pc_raw.embedded_camera.clone().map(|c| c.into());
+
+        // Update target canvas size from embedded camera
+        if let Some(ref embedded) = pc_raw.embedded_camera {
+            if let Ok(mut size) = TARGET_CANVAS_SIZE.lock() {
+                *size = Some(embedded.image_size);
+                log::info!(
+                    "Set target canvas size from embedded camera: {}x{}",
+                    embedded.image_size.0,
+                    embedded.image_size.1
+                );
+            }
+        } else {
+            // Clear target canvas size if no embedded camera
+            if let Ok(mut size) = TARGET_CANVAS_SIZE.lock() {
+                *size = None;
+            }
+        }
+
+        // Create new PointCloud (old one will be dropped)
+        let new_pc = match PointCloud::new(device, pc_raw) {
+            Ok(pc) => pc,
+            Err(e) => {
+                log::error!("Failed to create PointCloud: {:?}", e);
+                return;
+            }
+        };
+
+        log::info!(
+            "Loaded point cloud with {:} points (compressed: {})",
+            new_pc.num_points(),
+            new_pc.compressed()
+        );
+        if let Some(original) = new_downsampled_from {
+            log::warn!(
+                "Point cloud was downsampled from {} to {} points due to device limits",
+                original,
+                new_pc.num_points()
+            );
+        }
+
+        // Check if we need to recreate the renderer (compression state changed)
+        let needs_new_renderer =
+            self.pc.compressed() != new_pc.compressed() || self.pc.sh_deg() != new_pc.sh_deg();
+
+        if needs_new_renderer {
+            log::warn!(
+                "Compression or SH degree changed (compressed: {} -> {}, sh_deg: {} -> {}). \
+                 Please reload the page for proper rendering.",
+                self.pc.compressed(),
+                new_pc.compressed(),
+                self.pc.sh_deg(),
+                new_pc.sh_deg()
+            );
+            // Note: We can't easily recreate the renderer in WASM because
+            // GaussianRenderer::new is async and we're in a sync context.
+            // For now, we continue with the old renderer which may cause visual artifacts.
+        }
+
+        // Update state
+        self.pc = new_pc;
+        self.initial_camera = new_initial_camera;
+        self.downsampled_from = new_downsampled_from;
+        self.controller.center = self.pc.center();
+
+        // Reset view to new point cloud
+        let aabb = self.pc.bbox();
+        if let Some(mut cam) = self.initial_camera {
+            cam.fit_near_far(aabb);
+            self.splatting_args.camera = cam;
+        } else {
+            let aspect = self.config.width as f32 / self.config.height as f32;
+            self.splatting_args.camera = PerspectiveCamera::new(
+                aabb.center() - Vector3::new(1., 1., 1.) * aabb.radius() * 0.5,
+                Quaternion::one(),
+                PerspectiveProjection::new(
+                    Vector2::new(self.config.width, self.config.height),
+                    Vector2::new(Deg(45.), Deg(45. / aspect)),
+                    0.01,
+                    1000.,
+                ),
+            );
+        }
+        self.controller.reset_to_camera(self.splatting_args.camera);
+
+        // Reset animation and scene
+        self.animation = None;
+        self.scene = None;
+        self.current_view = None;
+        self.splatting_args.walltime = Duration::ZERO;
+
+        log::info!("Point cloud reload complete");
+    }
 }
 
 pub fn smoothstep(x: f32) -> f32 {
@@ -647,6 +1013,25 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     config: RenderConfig,
     pointcloud_file_path: Option<PathBuf>,
     scene_file_path: Option<PathBuf>,
+) {
+    open_window_with_options(
+        file,
+        scene_file,
+        config,
+        pointcloud_file_path,
+        scene_file_path,
+        false,
+    )
+    .await
+}
+
+pub async fn open_window_with_options<R: Read + Seek + Send + Sync + 'static>(
+    file: R,
+    scene_file: Option<R>,
+    config: RenderConfig,
+    pointcloud_file_path: Option<PathBuf>,
+    scene_file_path: Option<PathBuf>,
+    compress: bool,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
@@ -685,26 +1070,30 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     #[cfg(target_arch = "wasm32")]
     {
         use winit::platform::web::WindowExtWebSys;
-        // On wasm, append the canvas to the document body
+        // On wasm, append the canvas to the viewer container
         web_sys::window()
             .and_then(|win| win.document())
             .and_then(|doc| {
                 doc.get_element_by_id("loading-display")
                     .unwrap()
                     .set_text_content(Some("Unpacking"));
-                doc.body()
+                doc.get_element_by_id("viewer-container")
             })
-            .and_then(|body| {
+            .and_then(|container| {
                 let canvas = window.canvas().unwrap();
                 canvas.set_id("window-canvas");
-                canvas.set_width(body.client_width() as u32);
-                canvas.set_height(body.client_height() as u32);
+                // Use container dimensions instead of body
+                let container_element = container
+                    .dyn_ref::<web_sys::HtmlElement>()
+                    .expect("viewer-container should be an HtmlElement");
+                canvas.set_width(container_element.client_width() as u32);
+                canvas.set_height(container_element.client_height() as u32);
                 let elm = web_sys::Element::from(canvas);
-                elm.set_attribute("style", "width: 100%; height: 100%;")
+                elm.set_attribute("style", "width: 100%; height: 100%; display: block;")
                     .unwrap();
-                body.append_child(&elm).ok()
+                container.append_child(&elm).ok()
             })
-            .expect("couldn't append canvas to document body");
+            .expect("couldn't append canvas to viewer-container");
     }
 
     // limit the redraw rate to the monitor refresh rate
@@ -716,7 +1105,13 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         })
         .unwrap_or(Duration::from_millis(17));
 
-    let mut state = WindowContext::new(window, file, &config).await.unwrap();
+    // Minimum frame time to prevent GPU overload (60 FPS cap)
+    // This is used as a safety limit even when vsync is disabled
+    const MIN_FRAME_TIME: Duration = Duration::from_millis(16);
+
+    let mut state = WindowContext::new(window, file, &config, compress)
+        .await
+        .unwrap();
     state.pointcloud_file_path = pointcloud_file_path;
 
     if let Some(scene) = scene {
@@ -840,37 +1235,68 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                 state.controller.process_touch(controller_touch);
             }
             WindowEvent::RedrawRequested => {
-                if !config.no_vsync{
-                    // make sure the next redraw is called with a small delay
-                    target.set_control_flow(ControlFlow::wait_duration(min_wait));
+                // Check for pending file to load (WASM only)
+                #[cfg(target_arch = "wasm32")]
+                if let Ok(mut pending) = PENDING_FILE.try_lock() {
+                    if let Some(file) = pending.take() {
+                        state.load_new_pointcloud(file.data, file.filename, file.compress);
+                    }
                 }
+
+                // Check for pending trajectory to start (WASM only)
+                #[cfg(target_arch = "wasm32")]
+                if let Ok(mut pending) = PENDING_TRAJECTORY.try_lock() {
+                    if let Some(traj_type_str) = pending.take() {
+                        if let Some(traj_type) = TrajectoryType::parse(&traj_type_str) {
+                            state.start_trajectory(traj_type);
+                        } else {
+                            log::warn!("Unknown trajectory type: {}", traj_type_str);
+                        }
+                    }
+                }
+
+                // Check for pending reset and play (WASM only)
+                #[cfg(target_arch = "wasm32")]
+                if let Ok(mut pending) = PENDING_RESET_AND_PLAY.try_lock() {
+                    if let Some(traj_type_str) = pending.take() {
+                        let traj_type = TrajectoryType::parse(&traj_type_str);
+                        state.reset_and_replay(traj_type);
+                    }
+                }
+
+                // Always enforce a minimum frame time to prevent GPU overload
+                // Use monitor refresh rate when vsync is enabled, otherwise use 60 FPS cap
+                let frame_wait = if config.no_vsync {
+                    MIN_FRAME_TIME
+                } else {
+                    min_wait.max(MIN_FRAME_TIME)
+                };
+                target.set_control_flow(ControlFlow::wait_duration(frame_wait));
+
                 let now = Instant::now();
-                let dt = now-last;
+                let dt = now - last;
                 last = now;
 
                 let old_settings = state.splatting_args;
                 state.update(dt);
 
-                let (redraw_ui,shapes) = state.ui();
+                let (redraw_ui, shapes) = state.ui();
 
                 let resolution_change = state.splatting_args.viewport != Vector2::new(state.config.width, state.config.height);
 
                 let request_redraw = old_settings != state.splatting_args || resolution_change;
 
-                if request_redraw || redraw_ui{
+                if request_redraw || redraw_ui {
                     state.fps = (1. / dt.as_secs_f32()) * 0.05 + state.fps * 0.95;
-                    match state.render(request_redraw,state.ui_visible.then_some(shapes)) {
+                    match state.render(request_redraw, state.ui_visible.then_some(shapes)) {
                         Ok(_) => {}
                         // Reconfigure the surface if lost
                         Err(wgpu::SurfaceError::Lost) => state.resize(state.window.inner_size(), None),
                         // The system is out of memory, we should probably quit
-                        Err(wgpu::SurfaceError::OutOfMemory) =>target.exit(),
+                        Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
                         // All other errors (Outdated, Timeout) should be resolved by the next frame
                         Err(e) => println!("error: {:?}", e),
                     }
-                }
-                if config.no_vsync{
-                    state.window.request_redraw();
                 }
             }
             _ => {}
@@ -892,15 +1318,16 @@ pub async fn run_wasm(
     scene: Option<Vec<u8>>,
     pc_file: Option<String>,
     scene_file: Option<String>,
+    compress: bool,
 ) {
-    use std::{io::Cursor, str::FromStr};
+    use std::str::FromStr;
 
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
     console_log::init().expect("could not initialize logger");
     let pc_reader = Cursor::new(pc);
     let scene_reader = scene.map(|d: Vec<u8>| Cursor::new(d));
 
-    wasm_bindgen_futures::spawn_local(open_window(
+    wasm_bindgen_futures::spawn_local(open_window_with_options(
         pc_reader,
         scene_reader,
         RenderConfig {
@@ -909,5 +1336,91 @@ pub async fn run_wasm(
         },
         pc_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),
         scene_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),
+        compress,
     ));
+}
+
+/// Load a new file in-place without page reload (WASM only)
+/// This function queues the file data for the event loop to pick up
+/// The old PointCloud will be properly dropped before the new one is created
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn load_new_file(data: Vec<u8>, filename: String, compress: bool) {
+    log::info!(
+        "Queueing new file for load: {} ({} bytes)",
+        filename,
+        data.len()
+    );
+    if let Ok(mut pending) = PENDING_FILE.lock() {
+        *pending = Some(PendingFile {
+            data,
+            filename,
+            compress,
+        });
+    } else {
+        log::error!("Failed to lock PENDING_FILE mutex");
+    }
+}
+
+/// Check if there's a target canvas size from the embedded camera
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn has_target_canvas_size() -> bool {
+    if let Ok(size) = TARGET_CANVAS_SIZE.try_lock() {
+        size.is_some()
+    } else {
+        false
+    }
+}
+
+/// Get the target canvas size [width, height] from the embedded camera
+/// Returns null if no embedded camera size is available
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn get_target_canvas_size() -> js_sys::Array {
+    let arr = js_sys::Array::new();
+    if let Ok(size) = TARGET_CANVAS_SIZE.try_lock() {
+        if let Some((width, height)) = *size {
+            arr.push(&wasm_bindgen::JsValue::from(width));
+            arr.push(&wasm_bindgen::JsValue::from(height));
+        }
+    }
+    arr
+}
+
+/// Get the list of available trajectory types
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn get_trajectory_types() -> js_sys::Array {
+    let arr = js_sys::Array::new();
+    arr.push(&wasm_bindgen::JsValue::from_str("rotate_forward"));
+    arr.push(&wasm_bindgen::JsValue::from_str("swipe"));
+    arr.push(&wasm_bindgen::JsValue::from_str("shake"));
+    arr.push(&wasm_bindgen::JsValue::from_str("rotate"));
+    arr.push(&wasm_bindgen::JsValue::from_str("forward"));
+    arr
+}
+
+/// Start a trajectory animation
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn start_trajectory(trajectory_type: String) {
+    log::info!("Queueing trajectory: {}", trajectory_type);
+    if let Ok(mut pending) = PENDING_TRAJECTORY.lock() {
+        *pending = Some(trajectory_type);
+    } else {
+        log::error!("Failed to lock PENDING_TRAJECTORY mutex");
+    }
+}
+
+/// Reset view and start a trajectory animation
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn reset_view_and_play(trajectory_type: String) {
+    log::info!("Queueing reset and play: {}", trajectory_type);
+    if let Ok(mut pending) = PENDING_RESET_AND_PLAY.lock() {
+        *pending = Some(trajectory_type);
+    } else {
+        log::error!("Failed to lock PENDING_RESET_AND_PLAY mutex");
+    }
 }

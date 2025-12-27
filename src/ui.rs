@@ -178,6 +178,21 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                     ui.strong("Compressed:");
                     ui.label(state.pc.compressed().to_string());
                     ui.end_row();
+                    ui.strong("Device Tier:");
+                    ui.label(format!("{:?}", state.wgpu_context.capabilities.device_tier));
+                    ui.end_row();
+                    if let Some(original) = state.downsampled_from {
+                        ui.strong("Downsampled:");
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            format!(
+                                "{} -> {}",
+                                format_thousands(original as u32),
+                                format_thousands(state.pc.num_points())
+                            ),
+                        );
+                        ui.end_row();
+                    }
                     ui.strong("Mip Splatting:");
                     ui.label(
                         state
