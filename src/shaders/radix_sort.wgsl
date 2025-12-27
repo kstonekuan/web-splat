@@ -297,8 +297,9 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
         }
         
         kr[i] = (count << 16u) | rank;
+        workgroupBarrier();  // Ensure all reads complete before next iteration's store
     }
-    
+
     zero_smem(lid.x);   // now zeroing the smmem as we are now accumulating the histogram there
     workgroupBarrier();
 

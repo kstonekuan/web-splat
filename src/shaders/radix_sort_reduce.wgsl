@@ -106,6 +106,7 @@ fn reduce_pass(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>) {
         }
 
         kr[i] = (count << 16u) | rank;
+        workgroupBarrier();  // Ensure all reads complete before next iteration's store
     }
 
     zero_smem(lid.x);
