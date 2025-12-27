@@ -348,14 +348,15 @@
                 <p class="drop-subtitle">or click to browse</p>
                 <label class="compress-option" onclick="event.stopPropagation()">
                     <input type="checkbox" id="compress-checkbox" checked>
-                    <span>Compress for faster rendering</span>
+                    <span>Compress</span>
                 </label>
             </div>
         </div>
         <div id="no-webgpu" class="alert" style="display: none;">
             <h1>WebGPU not supported</h1>
             <p>Your browser does not support WebGPU.<br><a
-                    href="https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API#browser_compatibility">Please use a
+                    href="https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API#browser_compatibility">Please use
+                    a
                     browser that supports WebGPU.</a></p>
         </div>
         <div id="loading-error" class="alert" style="display: none;">
@@ -441,8 +442,9 @@
             // Update canvas if it exists
             const canvas = document.getElementById("window-canvas");
             if (canvas) {
-                canvas.width = Math.round(newWidth);
-                canvas.height = Math.round(newHeight);
+                const dpr = window.devicePixelRatio || 1;
+                canvas.width = Math.round(newWidth * dpr);
+                canvas.height = Math.round(newHeight * dpr);
             }
 
             console.log(`Resized canvas to ${Math.round(newWidth)}x${Math.round(newHeight)} (target aspect: ${targetAspect.toFixed(3)})`);

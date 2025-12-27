@@ -92,6 +92,7 @@ fn reduce_pass(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>) {
         let u_val = bitcast<u32>(kv[i]);
         let digit = extractBits(u_val, pass_ * rs_radix_log2, rs_radix_log2);
         atomicStore(&smem[lid.x], digit);
+        workgroupBarrier();  // Ensure all threads have stored their digit before reading
         var count = 0u;
         var rank = 0u;
 

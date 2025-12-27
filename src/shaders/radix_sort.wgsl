@@ -282,9 +282,10 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
         let digit = extractBits(u_val, pass_ * rs_radix_log2, rs_radix_log2);
         // smem[lid.x] = digit;
         atomicStore(&smem[lid.x], digit);
+        workgroupBarrier();  // Ensure all threads have stored their digit before reading
         var count = 0u;
         var rank = 0u;
-        
+
         for (var j = 0u; j < histogram_sg_size; j++) {
             // if smem[subgroup_offset + j] == digit {
             if atomicLoad(&smem[subgroup_offset + j]) == digit {
@@ -336,7 +337,8 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
         let exc = atomicLoad(&histograms[partition_offset + partition_base]);
         scatter_smem[lid.x] = exc;
     }
-    
+    workgroupBarrier();  // Ensure all global prefixes are written before continuing
+
     // compute exclusive prefix scan of histogram
     // corresponds to rs_prefix
     // TODO make shure that the data is put into smem

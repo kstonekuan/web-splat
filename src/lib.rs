@@ -1086,8 +1086,16 @@ pub async fn open_window_with_options<R: Read + Seek + Send + Sync + 'static>(
                 let container_element = container
                     .dyn_ref::<web_sys::HtmlElement>()
                     .expect("viewer-container should be an HtmlElement");
-                canvas.set_width(container_element.client_width() as u32);
-                canvas.set_height(container_element.client_height() as u32);
+                // Get device pixel ratio for high-DPI displays
+                let device_pixel_ratio = web_sys::window()
+                    .map(|w| w.device_pixel_ratio())
+                    .unwrap_or(1.0);
+                canvas.set_width(
+                    (container_element.client_width() as f64 * device_pixel_ratio) as u32,
+                );
+                canvas.set_height(
+                    (container_element.client_height() as f64 * device_pixel_ratio) as u32,
+                );
                 let elm = web_sys::Element::from(canvas);
                 elm.set_attribute("style", "width: 100%; height: 100%; display: block;")
                     .unwrap();
